@@ -4,13 +4,13 @@
 
 Waveshare **RoArm-M3**의 ESP32 제어 보드에서 동작하는 독립적인 **ESP-IDF / C++ 로봇팔 펌웨어** 개발 프로젝트입니다.
 
-제조사 펌웨어 대신 직접 작성한 코드로 **6축 서보의 피드백 수집, 동기 출력, 제어 주기 및 오류 대응**을 관리하는 것이 목적입니다. 최종적으로는 Physical AI 시스템에서 로봇팔의 저수준 제어 인터페이스로 사용합니다.
+제조사 펌웨어 대신 직접 작성한 코드로 **6개 관절(7개 물리 서보)의 피드백 수집, 동기 출력, 제어 주기 및 오류 대응**을 관리하는 것이 목적입니다. 최종적으로는 Physical AI 시스템에서 로봇팔의 저수준 제어 인터페이스로 사용합니다.
 
 ## Target
 
 - **Robot arm:** Waveshare RoArm-M3
 - **Controller:** RoArm-M3 내장 ESP32 보드 (ESP32-WROOM-32 기반)
-- **Actuators:** Feetech ST3215 계열 시리얼 서보 6개
+- **Actuators:** Feetech ST3215 계열 시리얼 서보 7개 (독립 관절 6축; Shoulder 구동/종동 2개)
 - **Servo bus:** Half-duplex UART, 1 Mbps, 8N1 (현재 프로젝트 설정)
 - **Firmware:** ESP-IDF v6.1, C++ / FreeRTOS
 - **Build system:** ESP-IDF / CMake
@@ -20,7 +20,7 @@ Waveshare **RoArm-M3**의 ESP32 제어 보드에서 동작하는 독립적인 **
 ## Development Goals
 
 1. 제조사 제어 기능을 참고하여 독립 펌웨어로 로봇팔 구동 기반을 구현합니다.
-2. 6개 서보를 일정 주기로 읽고 제어하며, **Read All → Compute All → Commit All** 형태의 다축 동기 제어를 목표로 합니다.
+2. 7개 서보를 일정 주기로 읽고 제어하며, **Read All → Compute All → Commit All** 형태의 다축 동기 제어를 목표로 합니다.
 3. ST3215 내부 위치 제어에 전적으로 의존하지 않고, ESP32에서 피드백 기반 **외부 PID 및 관절 제어**를 구현할 계획입니다. PWM 직접 제어 모드의 실제 지원 범위는 검증이 필요합니다.
 4. 통신 지연, 제어 주기, 다축 동기화, 오류 처리 및 정지 동작을 측정·개선합니다.
 5. 초기 개발 목표는 제조사 펌웨어와 비교 가능한 기본 제어 기능과 응답성을 확보하는 것입니다. 성능 비교 목표(약 80%)는 개발 지향점이며, 달성 여부는 아직 검증되지 않았습니다.
@@ -40,12 +40,12 @@ Orange Pi 5+ / KCF 기반 애플리케이션 (계획)
                  │  통신 및 명령 인터페이스
                  ▼
 RoArm-M3 ESP32 Custom Firmware
-  - 6축 피드백 수집 / Snapshot
+  - 7개 서보 피드백 수집 / Snapshot
   - 외부 PID 및 관절 제어 (계획)
   - 다축 출력 / 오류 처리 / 안전 제한 (개발 중)
                  │
                  ▼
-           ST3215 서보 × 6
+           ST3215 서보 × 7
 ```
 
 **판단과 제어의 역할**
@@ -64,7 +64,8 @@ app_main / Board initialization
           ▼
 MotorInterface (FreeRTOS task + communication FSM)
   ├─ UART TX/RX + response timeout / RX recovery
-  ├─ Six-servo sequential READ
+  ├─ Seven-servo sequential READ
+  ├─ INIT: sequential mode verification / optional parameter transaction
   ├─ MotorFeedbackFrame / TripleSnapshot
   ├─ Communication error counter / ERROR state
   └─ Performance logging (optional)
@@ -73,28 +74,26 @@ MotorInterface (FreeRTOS task + communication FSM)
 ST3215 (packet serializer / response parser / feedback decoder)
           │
           ▼
-6× ST3215 serial servos
+7× ST3215 serial servos
 ```
 
 ## Development Status
 
-**v0.1 — in development / hardware test pending**
+**v0.12 — initialisation integration fixes (hardware test pending)**
 
 | Area | Status |
 | --- | --- |
-| ESP-IDF 프로젝트 및 UART 보드 초기화 | 코드 구현 |
-| ST3215 패킷 직렬화·파싱 및 피드백 디코딩 | 코드 구현 |
-| 6축 순차 READ 및 Feedback Snapshot | 코드 구현 (아직 앱 시작점에 연결 전) |
-| 통신 FSM, 타임아웃, RX 복구, 오류 카운트 | 코드 구현 |
-| 1초 주기 성능 로그 (`task Hz`, `cycle Hz`, 평균/최대 지연) | 코드 구현 |
-| `app_main()`에서 MotorInterface 시작 | **미연결** |
-| Command Snapshot → 6축 SYNC WRITE | 미구현 |
-| PWM 출력 모드 및 ESP32 외부 PID | 미구현 |
-| 긴급 정지 명령 및 피드백 Freshness 검사 | 미구현 |
-| 실물 서보 통신 / 구동 / 주기 측정 | 미검증 |
-| 상위 KCF / Physical AI 연동 | 계획 |
+| ESP-IDF 프로젝트, UART 보드 초기화, ServoTask 시작 | 소스 구현 |
+| ST3215 패킷 생성·응답 파싱 및 7개 서보 피드백 수집 | 소스 구현 |
+| 7개 ID (11~17) 순차 INIT 모드 검증 후 READY | 소스 구현 |
+| EEPROM 모드 변경 (Unlock → WRITE → READ BACK → Lock) | 구현, 기본 실행 금지 |
+| 기본 초기화 모드 정책 | EEPROM WRITE 0, 현재 PWM_OPEN 모드 READ 검증 |
+| 토크 제한 설정 | 구현, 초기화 자동 WRITE 기본 비활성화 |
+| Command Snapshot → 7개 서보 SYNC_WRITE | 코드 경로 구현, PWM 출력 비활성화 |
+| 외부 PID, HOME/IDLE, 하드웨어 긴급 정지 | 미구현 |
+| 실제 ESP-IDF 빌드 / 실물 서보 검증 | 이번 수정 기준 미검증 |
 
-> 주의: 현재 `main.cpp`는 `BoardInitAll()`까지 호출하며 `MotorInterface::Initialize()`는 아직 호출하지 않습니다. 코드가 존재하는 것과 실제 실행되는 것은 구분해 주세요. 긴급 정지 출력도 아직 구현되지 않았으므로 실물 구동 테스트 전에 안전 기능을 보완해야 합니다.
+기본값에서는 현재 모드가 목표 PWM_OPEN과 다르면 INIT이 실패하며, **EEPROM을 자동 변경하지 않습니다.** 토크 활성화 및 PWM 출력도 자동 실행하지 않습니다. 실물 구동 전에는 토크 해제 시 중력 낙하 위험, 직접 PWM 제어 적합성, 통신·정지 안전 조건을 별도로 확인해야 합니다.
 
 ## Project Layout
 
@@ -103,8 +102,9 @@ main/
 ├── main.cpp               # app_main / board initialization
 ├── gpio_config.*          # board UART initialization
 ├── pins.h                 # board pin configuration
-├── motor_interface.*      # six-servo communication FSM / feedback
+├── motor_interface.*      # seven-servo init / communication FSM
 ├── st3215.*               # ST3215 packet protocol and motor data
+├── st3215_parameter_fsm.* # parameter READ / WRITE / verify / EEPROM lock
 └── shared_snapshot.h      # shared / triple snapshot utilities
 ```
 

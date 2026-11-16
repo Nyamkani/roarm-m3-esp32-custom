@@ -1,43 +1,15 @@
-# RoArm-M3 ST3215 Parameter FSM integration
+# RoArm-M3 ST3215 Parameter FSM integration (v0.12 fixes)
 
-Add `st3215_parameter_fsm.h/.cpp` to `main/` (main/CMakeLists.txt uses SRC_DIRS ".", so auto-compiles).
+- `MotorInterface::Initialize()` assigns `parameter_fsm_.SetPort(uart_num_)` before creating ServoTask.
+- `MotorInterface::StateInit()` remains in INIT until the scheduler reaches COMPLETE. Any parameter failure enters ERROR.
+- `ProcessMotorInitialization()` iterates servo IDs **11–17** using one UART owner (ServoTask). Each mode check runs through `ST3215ParameterFSM::Poll()`.
+- `MOTOR_EEPROM_WRITE_ENABLE=0` (default) calls `VerifyOperatingMode(id, PWM_OPEN)`, which only READs and compares. A mismatch fails INIT; it does **not** silently advance or change EEPROM.
+- `MOTOR_EEPROM_WRITE_ENABLE=1` calls `SetOperatingMode(id, PWM_OPEN)`; the existing transaction engine checks torque-off, unlocks EEPROM, writes, reads back, and relocks. Only enable this after verifying arm support/safety.
+- `MOTOR_INIT_TORQUE_LIMIT_ENABLE=0` (default) leaves the current RAM torque limit unchanged. If enabled, `MOTOR_INIT_TORQUE_LIMIT` is applied with WRITE / READ BACK. Choose its value for the actual mechanism first.
+- No automatic torque enable, no HOME move, and `MOTOR_PWM_OUTPUT_ENABLE=0` still prevents PWM output.
+- MODE EEPROM write permission and motor output permission are independent.
+- `ST3215::MOTOR_COUNT` and `MotorInterface::MOTOR_COUNT` are both 7, so SYNC_WRITE accepts the seven IDs.
 
-In `main/motor_interface.h`, add:
+## Verification boundaries
 
-```cpp
-#include "st3215_parameter_fsm.h"
-// MotorInterface private:
-ST3215ParameterFSM parameter_fsm_{};
-```
-
-In `MotorInterface::Initialize()` after `uart_num_ = board.servo_uart;` add:
-
-```cpp
-parameter_fsm_.SetPort(uart_num_);
-```
-
-Only call `parameter_fsm_.Begin()/SetOperatingMode()/SetTorqueEnable()/SetTorqueLimit()` and `parameter_fsm_.Poll()` from the **same ServoTask** owning the UART. Never call the configuration FSM concurrently with `ProcessCommunicationFSM()`. The MotorInterface INIT scheduler must be built to sequence 7 devices before RUNNING. Do not set an unverified default operating mode or auto-enable torque at startup.
-
-Example inside INIT *once a servo configuration request has been enqueued*:
-
-```cpp
-const auto result = parameter_fsm_.Poll();
-if (result == ST3215ParameterFSM::Result::FAILED) {
-    ESP_LOGE(TAG, "Parameter validation failed: ID=%u err=%d",
-             parameter_fsm_.GetServoID(), parameter_fsm_.GetError());
-    EnterError();
-}
-// For SUCCESS, move to the next configuration operation.
-```
-
-To start a particular setting from ServoTask:
-
-```cpp
-const esp_err_t started = parameter_fsm_.SetOperatingMode(
-    id, ST3215ParameterFSM::Mode::POSITION);
-// ESP_OK means accepted, NOT finished. Keep calling Poll() each Task tick.
-```
-
-**Safety / scope:** This is the *working parameter transaction engine*, not a complete automatic initialization policy. No write occurs unless explicitly queued. The caller must establish servo supported mode, torque-safe state and a 7-servo initialization profile before choosing settings. Position offset, ID, baud are intentionally excluded. EEPROM mode changes check torque disabled; they never switch torque off automatically. READ BACK validates values, but does not prove physical motor movement. A failed lock attempt is FAILED and requires manual recovery. No real servo/ESP-IDF test was performed.
-
-Current GitHub `main` as seen during this task is still 6 motors and IDs 1..6; user's newer 7-servo and FSM changes are local/not visible on the remote. Merge into the user's local 7-servo version, do not overwrite that file with remote sources.
+This is a **source-level integration**, not proof of successful ESP-IDF compilation or physical servo behavior. With the default read-only mode policy, a factory servo in a mode other than PWM_OPEN will cause an expected INIT ERROR. Servo status return setting, timing, EEPROM behavior, and physical safety need bench validation before enabling any writes/output.

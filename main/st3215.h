@@ -114,7 +114,7 @@ struct ST3215Response
 class ST3215
 {
 public:
-    static constexpr size_t MOTOR_COUNT = 6;
+    static constexpr size_t MOTOR_COUNT = 7;
     static constexpr size_t MAX_PACKET_SIZE = 128;
 
     static constexpr uint8_t BROADCAST_ID = 0xFE;

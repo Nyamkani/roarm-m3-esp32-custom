@@ -1,3 +1,9 @@
 {
-    "idf.currentSetup": "/home/kssvm/.espressif/v6.1/esp-idf"
+    "idf.currentSetup": "/home/kssvm/.espressif/v6.1/esp-idf",
+    "clangd.path": "/home/kssvm/.espressif/tools/esp-clangd/esp-21.1.3_20260408/esp-clangd/bin/clangd",
+    "clangd.arguments": [
+      "--background-index",
+      "--query-driver=**",
+      "--compile-commands-dir=/home/kssvm/workspace/esp/workspace/roarm-m3-esp32-custom/build"
+    ]
 }

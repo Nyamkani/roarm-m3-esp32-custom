@@ -12,12 +12,14 @@
 
 #include "st3215.h"
 #include "shared_snapshot.h"
+#include "st3215_parameter_fsm.h"
+
 
 #include "gpio_config.h"
 #include "freertos/task.h"
 #include "freertos/FreeRTOS.h"
 
-
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_err.h"
 
@@ -25,7 +27,7 @@
 
 
 
-#define MOTOR_COUNT 6
+#define MOTOR_COUNT 7
 
 #define MOTOR_IO_DIRECT 0
 #define MOTOR_IO_TASK   1
@@ -40,9 +42,28 @@ static constexpr int64_t CONTROL_PERIOD_US = 10000;
 static constexpr int64_t CYCLE_BUDGET_US   = 5000;
 static constexpr int64_t RESPONSE_TIMEOUT_US = 2000;
 
+// Example IDs. Verify against actual RoArm-M3.
+static constexpr uint8_t SERVO_IDS[MOTOR_COUNT] =
+{
+    11, 12, 13, 14, 15, 16, 17
+};
+/*
+서보 ID	역할
+11	Base
+12	Shoulder Driving
+13	Shoulder Driven
+14	Elbow
+15	Wrist
+16	Roll
+17	Gripper
+*/
+
 
 #define MOTOR_PERF_LOG_ENABLE 1
 #define MOTOR_PERF_LOG_PERIOD_US 1000000
+
+
+#define MOTOR_EEPROM_WRITE_ENABLE 0
 
 enum class ServoReceiveStatus : uint8_t
 {
@@ -71,6 +92,51 @@ enum class MotorCommState : uint8_t
     SYNC_WRITE,    
     COMPLETE,
     RX_RECOVERY
+};
+
+enum class ParameterState : uint8_t
+{
+    IDLE,
+
+    READ_CURRENT,
+    WAIT_CURRENT,
+
+    CHECK_TORQUE,
+    WAIT_TORQUE,
+
+    EEPROM_UNLOCK,
+    VERIFY_UNLOCK,
+
+    WRITE_PARAMETER,
+
+    READ_BACK,
+    WAIT_READ_BACK,
+
+    EEPROM_LOCK,
+    VERIFY_LOCK,
+
+    COMPLETE,
+    ERROR
+};
+
+enum class ParameterResult : uint8_t
+{
+    IDLE,
+    BUSY,
+    SUCCESS,
+    FAILED
+};
+
+enum class MotorInitState : uint8_t
+{
+    START,
+    SET_MODE,
+    WAIT_MODE,
+    SET_TORQUE_LIMIT,
+    WAIT_TORQUE_LIMIT,
+    NEXT_MOTOR,
+    COMPLETE,
+    ERROR
 };
 
 struct MotorCommandFrame
@@ -114,6 +180,13 @@ private:
     int64_t last_comm_cycle_us_ = 0;
 
     static constexpr int64_t COMM_PERIOD_US = 10000;
+
+private:
+    MotorInitState init_state_ = MotorInitState::START;
+
+    size_t init_motor_index_ = 0;
+
+    void ProcessMotorInitialization();
 
 private:
     struct ServoReceiveContext
@@ -242,4 +315,32 @@ private:
     void UpdatePerformanceLog();
 
 #endif
+
+public:
+    esp_err_t BeginSetParameter(
+        uint8_t servo_id,
+        ST3215Register address,
+        const uint8_t* data,
+        size_t data_size,
+        RegisterStorage storage);
+
+    ParameterResult GetParameterResult() const;
+
+    void ProcessParameterFSM();
+
+    esp_err_t SetOperatingMode(
+        uint8_t servo_id,
+        ST3215Mode mode);
+
+    esp_err_t SetTorqueEnable(
+        uint8_t servo_id,
+        bool enable);
+
+    esp_err_t SetTorqueLimit(
+        uint8_t servo_id,
+        uint16_t limit);
+
+private:
+    ST3215ParameterFSM parameter_fsm_{};
+
 };

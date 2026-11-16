@@ -1,15 +1,8 @@
 
 #include "motor_interface.h"
 
-#include "esp_log.h"
 
 static const char* TAG = "motor_interface";
-
-// Example IDs. Verify against actual RoArm-M3.
-static constexpr uint8_t SERVO_IDS[MOTOR_COUNT] =
-{
-    1, 2, 3, 4, 5, 6
-};
 
 esp_err_t MotorInterface::Initialize(
     const board_handles_t& board)
@@ -52,6 +45,18 @@ ST3215* MotorInterface::GetMotor(size_t index)
         return nullptr;
 
     return &motors_[index];
+}
+
+void MotorInterface::SetCommandFrame(
+    const MotorCommandFrame& frame)
+{
+    command_snapshot_.Write(frame);
+}
+
+bool MotorInterface::GetFeedbackFrame(
+    SharedSnapshotFrame<MotorFeedbackFrame>& out)
+{
+    return feedback_snapshot_.Read(out);
 }
 
 void MotorInterface::MainTask(void* arg)
@@ -295,6 +300,8 @@ void MotorInterface::StateInit()
     // Board UART / motor initialization
     // is already performed by Initialize().
 
+    ProcessMotorInitialization();
+
     comm_state_ = MotorCommState::IDLE;
     current_motor_index_ = 0;
 
@@ -365,6 +372,14 @@ void MotorInterface::ProcessCommunicationFSM()
 
             case MotorCommState::NEXT_MOTOR:
                 CommNextMotor();
+                break;
+
+            case MotorCommState::PROCESS:
+                CommProcess();
+                break;
+
+            case MotorCommState::SYNC_WRITE:
+                CommSyncWrite();
                 break;
 
             case MotorCommState::COMPLETE:
@@ -842,3 +857,55 @@ void MotorInterface::UpdatePerformanceLog()
 }
 
 #endif  // MOTOR_PERF_LOG_ENABLE
+
+
+void MotorInterface::ProcessMotorInitialization()
+{
+
+    switch (init_state_)
+    {
+        case MotorInitState::SET_MODE:
+        {
+        #if MOTOR_EEPROM_WRITE_ENABLE
+            const uint8_t id = motors_[init_motor_index_].GetID();
+            const esp_err_t ret =
+                parameter_fsm_.SetOperatingMode(
+                    id,
+                    ST3215ParameterFSM::Mode::PWM_OPEN);
+
+            if (ret != ESP_OK)
+            {
+                EnterError();
+                return;
+            }
+
+            init_state_ = MotorInitState::WAIT_MODE;
+        #else
+            // EEPROM WRITE를 실행하지 않음
+            init_state_ = MotorInitState::SET_TORQUE_LIMIT;
+        #endif
+            break;
+        }
+
+        case MotorInitState::WAIT_MODE:
+        {
+            // 바로 이 위치입니다.
+            const auto result = parameter_fsm_.Poll();
+
+            if (result == ST3215ParameterFSM::Result::SUCCESS)
+            {
+                init_state_ = MotorInitState::SET_TORQUE_LIMIT;
+            }
+            else if (result == ST3215ParameterFSM::Result::FAILED)
+            {
+                EnterError();
+            }
+
+            break;
+        }
+
+        // 나머지 상태 처리...
+        default:
+            break;
+    }
+}

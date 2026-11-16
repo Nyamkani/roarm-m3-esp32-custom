@@ -49,6 +49,38 @@ enum class ST3215Command : uint8_t
     SYNC_WRITE = 0x83
 };
 
+enum class ST3215Mode : uint8_t
+{
+    POSITION     = 0,
+    SPEED_CLOSED = 1,
+    PWM_OPEN     = 2,
+    STEP         = 3
+};
+
+enum class ST3215Register : uint8_t
+{
+    ID               = 5,
+    BAUD_RATE        = 6,
+    RESPONSE_LEVEL   = 8,
+    POSITION_OFFSET  = 31,
+    OPERATING_MODE   = 33,
+
+    TORQUE_ENABLE    = 40,
+    GOAL_POSITION    = 42,
+    PWM_OUTPUT       = 44,
+    GOAL_SPEED       = 46,
+    TORQUE_LIMIT     = 48,
+
+    EEPROM_LOCK      = 55,
+    PRESENT_POSITION = 56
+};
+
+enum class RegisterStorage : uint8_t
+{
+    RAM,
+    EEPROM
+};
+
 struct ST3215Request
 {
     ST3215Command command = ST3215Command::PING;

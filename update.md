@@ -53,3 +53,22 @@ RoArm-M3 ESP32 Custom Firmware 개발 기록입니다. **코드 구현**, **검�
 6. 상위 KCF 애플리케이션 및 Physical AI 동작 명령 인터페이스 연동
 
 > 이 문서는 `v0.1` 커밋 기준의 구현 현황입니다. 아직 실제 모터 제어 성능이나 안전성이 확인된 릴리스가 아닙니다.
+
+## v0.12 — fixed some errors
+
+- **Commit message:** `v0.12 fixed some errors`
+- **Based on:** `v0.12` (`ac5fa208`)
+- **Validation:** Source review; ESP-IDF build and hardware validation not performed in this change
+
+### Fixes
+- INIT no longer enters READY immediately: it waits for `MotorInitState::COMPLETE` and aborts on ERROR.
+- Implemented missing START, SET_TORQUE_LIMIT, WAIT_TORQUE_LIMIT, NEXT_MOTOR, COMPLETE and ERROR transitions for sequential initialization of IDs 11–17.
+- Passed the configured UART port to `ST3215ParameterFSM` before ServoTask creation.
+- Changed `ST3215::MOTOR_COUNT` from 6 to 7 to match the arm and avoid rejecting seven-device SYNC_WRITE.
+- Removed unused, declared-only parameter wrappers from `MotorInterface`; `ST3215ParameterFSM` is the transaction owner.
+- Added `VerifyOperatingMode()` for READ-only mode validation. With `MOTOR_EEPROM_WRITE_ENABLE=0`, mismatches cause INIT ERROR without EEPROM WRITE.
+- Added `MOTOR_INIT_TORQUE_LIMIT_ENABLE=0` default: the 1000-unit sample limit is not automatically written. If explicitly enabled, setting uses WRITE → READ BACK verification.
+
+### Safety and next tests
+
+Default EEPROM mode changes and PWM output remain disabled. Even with no writes, INIT requires seven connected servos with matching configured mode, so a fresh factory setup may fail verification as expected. No torque enable or automatic movement is performed. Before activating EEPROM writes or PWM output, verify mode/register semantics, suspended-arm safety, real servo response timing, and full 7-device 100Hz budget.

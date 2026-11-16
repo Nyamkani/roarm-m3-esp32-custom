@@ -34,7 +34,7 @@ uint8_t ST3215ParameterFSM::ReadSize(Step s, uint8_t target_size)
 
 esp_err_t ST3215ParameterFSM::Begin(uint8_t id, Register reg,
                                    const uint8_t* data, size_t size,
-                                   Storage storage)
+                                   Storage storage, bool verify_only)
 {
     if (result_ == Result::BUSY || unlock_may_have_happened_)
         return ESP_ERR_INVALID_STATE;
@@ -54,7 +54,7 @@ esp_err_t ST3215ParameterFSM::Begin(uint8_t id, Register reg,
 
     id_ = id; address_ = a; size_ = static_cast<uint8_t>(size);
     desired_ = {}; std::memcpy(desired_.data(), data, size);
-    storage_ = storage; return_level_ = 1;
+    storage_ = storage; verify_only_ = verify_only; return_level_ = 1;
     unlock_may_have_happened_ = false;
     failed_pending_relock_ = false;
     error_ = ESP_OK; result_ = Result::BUSY;
@@ -67,6 +67,12 @@ esp_err_t ST3215ParameterFSM::SetOperatingMode(uint8_t id, Mode mode)
     const uint8_t value = static_cast<uint8_t>(mode);
     return Begin(id, Register::OPERATING_MODE, &value, 1, Storage::EEPROM);
 }
+esp_err_t ST3215ParameterFSM::VerifyOperatingMode(uint8_t id, Mode mode)
+{
+    const uint8_t value = static_cast<uint8_t>(mode);
+    return Begin(id, Register::OPERATING_MODE, &value, 1, Storage::EEPROM, true);
+}
+
 esp_err_t ST3215ParameterFSM::SetTorqueEnable(uint8_t id, bool enabled)
 {
     const uint8_t value = enabled ? 1 : 0;
@@ -176,6 +182,9 @@ void ST3215ParameterFSM::CompleteStep(const ST3215Response* response)
     case Step::READ_CURRENT:
         if (std::memcmp(response->params, desired_.data(), size_) == 0) {
             result_ = Result::SUCCESS;
+        } else if (verify_only_) {
+            // Read-only policy: reject a mismatched mode, do not write.
+            Fail(ESP_ERR_INVALID_STATE);
         } else if (storage_ == Storage::EEPROM) {
             Next(Step::READ_TORQUE);
         } else {

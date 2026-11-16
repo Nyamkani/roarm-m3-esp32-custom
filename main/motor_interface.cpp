@@ -8,6 +8,7 @@ esp_err_t MotorInterface::Initialize(
     const board_handles_t& board)
 {
     uart_num_ = board.servo_uart;
+    parameter_fsm_.SetPort(uart_num_);
 
     // Initialize all motor objects
     for (size_t i = 0; i < MOTOR_COUNT; ++i)
@@ -302,9 +303,15 @@ void MotorInterface::StateInit()
 
     ProcessMotorInitialization();
 
+    // Only enter RUNNING after every servo passed INIT verification.
+    if (state_ == MotorInterfaceState::ERROR ||
+        init_state_ != MotorInitState::COMPLETE)
+    {
+        return;
+    }
+
     comm_state_ = MotorCommState::IDLE;
     current_motor_index_ = 0;
-
     state_ = MotorInterfaceState::READY;
 }
 
@@ -861,51 +868,119 @@ void MotorInterface::UpdatePerformanceLog()
 
 void MotorInterface::ProcessMotorInitialization()
 {
+    if (state_ != MotorInterfaceState::INIT)
+        return;
+
+    // No UART ownership overlap: this is only invoked during INIT.
+    if (init_state_ != MotorInitState::COMPLETE &&
+        init_motor_index_ >= MOTOR_COUNT)
+    {
+        init_state_ = MotorInitState::ERROR;
+    }
 
     switch (init_state_)
     {
+        case MotorInitState::START:
+            init_motor_index_ = 0;
+            init_state_ = MotorInitState::SET_MODE;
+            break;
+
         case MotorInitState::SET_MODE:
         {
-        #if MOTOR_EEPROM_WRITE_ENABLE
             const uint8_t id = motors_[init_motor_index_].GetID();
-            const esp_err_t ret =
-                parameter_fsm_.SetOperatingMode(
-                    id,
-                    ST3215ParameterFSM::Mode::PWM_OPEN);
-
-            if (ret != ESP_OK)
+#if MOTOR_EEPROM_WRITE_ENABLE
+            const esp_err_t err = parameter_fsm_.SetOperatingMode(
+                id, ST3215ParameterFSM::Mode::PWM_OPEN);
+#else
+            // EEPROM writes disabled: mode must still be READ-verified.
+            const esp_err_t err = parameter_fsm_.VerifyOperatingMode(
+                id, ST3215ParameterFSM::Mode::PWM_OPEN);
+#endif
+            if (err != ESP_OK)
             {
+                ESP_LOGE(TAG, "INIT mode request failed: servo=%u err=%s",
+                         static_cast<unsigned>(id), esp_err_to_name(err));
+                init_state_ = MotorInitState::ERROR;
                 EnterError();
                 return;
             }
-
             init_state_ = MotorInitState::WAIT_MODE;
-        #else
-            // EEPROM WRITE를 실행하지 않음
-            init_state_ = MotorInitState::SET_TORQUE_LIMIT;
-        #endif
             break;
         }
 
         case MotorInitState::WAIT_MODE:
         {
-            // 바로 이 위치입니다.
             const auto result = parameter_fsm_.Poll();
-
             if (result == ST3215ParameterFSM::Result::SUCCESS)
             {
                 init_state_ = MotorInitState::SET_TORQUE_LIMIT;
             }
             else if (result == ST3215ParameterFSM::Result::FAILED)
             {
+                ESP_LOGE(TAG, "INIT mode verification failed: servo=%u err=%s",
+                         static_cast<unsigned>(parameter_fsm_.GetServoID()),
+                         esp_err_to_name(parameter_fsm_.GetError()));
+                init_state_ = MotorInitState::ERROR;
                 EnterError();
             }
-
             break;
         }
 
-        // 나머지 상태 처리...
+        case MotorInitState::SET_TORQUE_LIMIT:
+        {
+#if MOTOR_INIT_TORQUE_LIMIT_ENABLE
+            const uint8_t id = motors_[init_motor_index_].GetID();
+            const esp_err_t err = parameter_fsm_.SetTorqueLimit(
+                id, MOTOR_INIT_TORQUE_LIMIT);
+            if (err != ESP_OK)
+            {
+                ESP_LOGE(TAG, "INIT torque-limit request failed: servo=%u err=%s",
+                         static_cast<unsigned>(id), esp_err_to_name(err));
+                init_state_ = MotorInitState::ERROR;
+                EnterError();
+                return;
+            }
+            init_state_ = MotorInitState::WAIT_TORQUE_LIMIT;
+#else
+            // No torque-limit modification until the limit is chosen for the arm.
+            init_state_ = MotorInitState::NEXT_MOTOR;
+#endif
+            break;
+        }
+
+        case MotorInitState::WAIT_TORQUE_LIMIT:
+        {
+            const auto result = parameter_fsm_.Poll();
+            if (result == ST3215ParameterFSM::Result::SUCCESS)
+            {
+                init_state_ = MotorInitState::NEXT_MOTOR;
+            }
+            else if (result == ST3215ParameterFSM::Result::FAILED)
+            {
+                ESP_LOGE(TAG, "INIT torque-limit verification failed: servo=%u err=%s",
+                         static_cast<unsigned>(parameter_fsm_.GetServoID()),
+                         esp_err_to_name(parameter_fsm_.GetError()));
+                init_state_ = MotorInitState::ERROR;
+                EnterError();
+            }
+            break;
+        }
+
+        case MotorInitState::NEXT_MOTOR:
+            ++init_motor_index_;
+            init_state_ = (init_motor_index_ < MOTOR_COUNT)
+                            ? MotorInitState::SET_MODE
+                            : MotorInitState::COMPLETE;
+            break;
+
+        case MotorInitState::COMPLETE:
+            // StateInit() performs the transition to READY.
+            break;
+
+        case MotorInitState::ERROR:
         default:
+            init_state_ = MotorInitState::ERROR;
+            EnterError();
             break;
     }
 }

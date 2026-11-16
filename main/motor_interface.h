@@ -32,7 +32,13 @@
 
 #define MOTOR_IO_MODE MOTOR_IO_TASK
 
-#define MOTOR_TASK_PERIOD_MS 10
+#define MOTOR_TASK_PERIOD_MS 1
+
+#define MOTOR_PWM_OUTPUT_ENABLE 0
+
+static constexpr int64_t CONTROL_PERIOD_US = 10000;
+static constexpr int64_t CYCLE_BUDGET_US   = 5000;
+static constexpr int64_t RESPONSE_TIMEOUT_US = 2000;
 
 
 #define MOTOR_PERF_LOG_ENABLE 1
@@ -61,6 +67,8 @@ enum class MotorCommState : uint8_t
     SEND_REQUEST,
     WAIT_RESPONSE,
     NEXT_MOTOR,
+    PROCESS,       
+    SYNC_WRITE,    
     COMPLETE,
     RX_RECOVERY
 };
@@ -102,8 +110,6 @@ private:
 
     static constexpr uint8_t FEEDBACK_ADDRESS = 56;
     static constexpr uint8_t FEEDBACK_SIZE = 15;
-
-    MotorFeedbackFrame cycle_feedback_{};
 
     int64_t last_comm_cycle_us_ = 0;
 
@@ -195,6 +201,26 @@ private:
     void EnterError();
     void CommRxRecovery();
 
+public:
+    void SetCommandFrame(const MotorCommandFrame& frame);
+
+    bool GetFeedbackFrame(
+        SharedSnapshotFrame<MotorFeedbackFrame>& out);
+
+private:
+    MotorFeedbackFrame cycle_feedback_{};
+    MotorCommandFrame cycle_command_{};
+
+    bool command_valid_ = false;
+    bool cycle_write_sent_ = false;
+
+    static constexpr uint8_t PWM_OUTPUT_ADDRESS = 44;
+    static constexpr uint8_t PWM_OUTPUT_SIZE = 2;
+
+    void CommProcess();
+    void CommSyncWrite();
+    esp_err_t SendSyncPWM(
+        const MotorCommandFrame& command);
 
 private:
 #if MOTOR_PERF_LOG_ENABLE

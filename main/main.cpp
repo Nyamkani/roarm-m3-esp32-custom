@@ -1,8 +1,11 @@
 #include "gpio_config.h"
+#include "motor_interface.h"
 #include "esp_log.h"
 
 static const char* TAG = "app_main";
+
 static board_handles_t board{};
+static MotorInterface motor_interface{};
 
 extern "C" void app_main(void)
 {
@@ -12,7 +15,11 @@ extern "C" void app_main(void)
         return;
     }
 
-    ESP_LOGI(TAG, "Board initialization successful");
+    if (motor_interface.Initialize(board) != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Motor interface initialization failed");
+        return;
+    }
 
-    // Application initialization (Next step)
+    ESP_LOGI(TAG, "Motor interface started");
 }

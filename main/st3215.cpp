@@ -504,3 +504,28 @@ esp_err_t ST3215::Serialize(
         tx_len
     );
 }
+
+esp_err_t ST3215::EncodePWM(
+    int16_t output,
+    uint8_t data[2])
+{
+    if (data == nullptr ||
+        output < -1000 ||
+        output > 1000)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const uint16_t magnitude =
+        static_cast<uint16_t>(
+            output < 0 ? -static_cast<int32_t>(output) : output);
+
+    const uint16_t raw =
+        static_cast<uint16_t>(
+            magnitude | (output < 0 ? 0x0400u : 0u));
+
+    data[0] = static_cast<uint8_t>(raw & 0xFFu);
+    data[1] = static_cast<uint8_t>((raw >> 8) & 0xFFu);
+
+    return ESP_OK;
+}

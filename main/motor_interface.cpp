@@ -525,10 +525,119 @@ void MotorInterface::CommNextMotor()
     }
     else
     {
-        comm_state_ = MotorCommState::COMPLETE;
+        comm_state_ = MotorCommState::PROCESS;
     }
 }
 
+void MotorInterface::CommProcess()
+{
+    // 6축 피드백 검증
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        if (!cycle_feedback_.motors[i].valid)
+        {
+            HandleCommunicationFailure();
+            return;
+        }
+    }
+
+    SharedSnapshotFrame<MotorCommandFrame> cmd_frame{};
+
+    command_valid_ = command_snapshot_.Read(cmd_frame);
+
+    if (command_valid_)
+    {
+        cycle_command_ = cmd_frame.data;
+    }
+
+    output_inhibit_ = false;
+
+    // TODO:
+    // 6축 외부 PID 연산
+    // 목표 위치와 실제 피드백을 이용한 PWM 계산
+
+    comm_state_ = MotorCommState::SYNC_WRITE;
+}
+
+esp_err_t MotorInterface::SendSyncPWM(
+    const MotorCommandFrame& command)
+{
+    uint8_t ids[MOTOR_COUNT]{};
+    uint8_t pwm_data[MOTOR_COUNT * PWM_OUTPUT_SIZE]{};
+
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        ids[i] = motors_[i].GetID();
+
+        const esp_err_t ret = ST3215::EncodePWM(
+            command.motors[i].output,
+            &pwm_data[i * PWM_OUTPUT_SIZE]);
+
+        if (ret != ESP_OK)
+            return ret;
+    }
+
+    ST3215Request request{};
+
+    request.command = ST3215Command::SYNC_WRITE;
+    request.address = PWM_OUTPUT_ADDRESS;
+    request.data_size = PWM_OUTPUT_SIZE;
+    request.servo_ids = ids;
+    request.servo_count = MOTOR_COUNT;
+    request.data = pwm_data;
+    request.data_len = sizeof(pwm_data);
+
+    uint8_t tx_buffer[ST3215::MAX_PACKET_SIZE]{};
+    size_t tx_len = 0;
+
+    const esp_err_t ret = ST3215::Serialize(
+        request,
+        tx_buffer,
+        sizeof(tx_buffer),
+        tx_len);
+
+    if (ret != ESP_OK)
+        return ret;
+
+    return SendRequest(
+        tx_buffer,
+        tx_len,
+        pdMS_TO_TICKS(2));
+}
+
+
+void MotorInterface::CommSyncWrite()
+{
+#if MOTOR_PWM_OUTPUT_ENABLE
+
+    if (!command_valid_ || output_inhibit_)
+    {
+        comm_state_ = MotorCommState::COMPLETE;
+        return;
+    }
+
+    if (esp_timer_get_time() - comm_cycle_start_us_
+        >= CYCLE_BUDGET_US)
+    {
+#if MOTOR_PERF_LOG_ENABLE
+        ++perf_.cycle_timeout_count;
+#endif
+        HandleCommunicationFailure();
+        return;
+    }
+
+    if (SendSyncPWM(cycle_command_) != ESP_OK)
+    {
+        EnterError();
+        return;
+    }
+
+    cycle_write_sent_ = true;
+
+#endif
+
+    comm_state_ = MotorCommState::COMPLETE;
+}
 
 void MotorInterface::CommComplete()
 {

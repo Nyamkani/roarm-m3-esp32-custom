@@ -151,4 +151,10 @@ private:
     MotorFeedback feedback_{};
 
     portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
+
+public:
+    static esp_err_t EncodePWM(
+        int16_t output,
+        uint8_t data[2]);
+
 };

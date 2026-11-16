@@ -30,8 +30,10 @@ public:
 
     // Requests are copied into owned storage; ESP_OK means accepted, not verified.
     esp_err_t Begin(uint8_t id, Register reg, const uint8_t* data,
-                    size_t size, Storage storage);
+                    size_t size, Storage storage, bool verify_only = false);
     esp_err_t SetOperatingMode(uint8_t id, Mode mode);
+    // READ + compare only. Never performs WRITE, including EEPROM unlock.
+    esp_err_t VerifyOperatingMode(uint8_t id, Mode mode);
     esp_err_t SetTorqueEnable(uint8_t id, bool enabled);
     esp_err_t SetTorqueLimit(uint8_t id, uint16_t limit);
     // Position-offset writes intentionally require an explicit maintenance path.
@@ -68,6 +70,7 @@ private:
     uint8_t size_ = 0;
     std::array<uint8_t, 2> desired_{};
     Storage storage_ = Storage::RAM;
+    bool verify_only_ = false;
     uint8_t return_level_ = 1;
     bool unlock_may_have_happened_ = false;
     bool failed_pending_relock_ = false;

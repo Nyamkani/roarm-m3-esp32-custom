@@ -63,7 +63,14 @@ static constexpr uint8_t SERVO_IDS[MOTOR_COUNT] =
 #define MOTOR_PERF_LOG_PERIOD_US 1000000
 
 
+// 0: verify operating mode by READ only; never unlock/write EEPROM.
+// 1: allow SetOperatingMode() to update EEPROM after torque-off check.
 #define MOTOR_EEPROM_WRITE_ENABLE 0
+
+// Torque limit must be selected for the actual mechanism before enabling.
+// Disabled by default: no implicit RAM writes during motor initialization.
+#define MOTOR_INIT_TORQUE_LIMIT_ENABLE 0
+static constexpr uint16_t MOTOR_INIT_TORQUE_LIMIT = 1000;
 
 enum class ServoReceiveStatus : uint8_t
 {
@@ -92,39 +99,6 @@ enum class MotorCommState : uint8_t
     SYNC_WRITE,    
     COMPLETE,
     RX_RECOVERY
-};
-
-enum class ParameterState : uint8_t
-{
-    IDLE,
-
-    READ_CURRENT,
-    WAIT_CURRENT,
-
-    CHECK_TORQUE,
-    WAIT_TORQUE,
-
-    EEPROM_UNLOCK,
-    VERIFY_UNLOCK,
-
-    WRITE_PARAMETER,
-
-    READ_BACK,
-    WAIT_READ_BACK,
-
-    EEPROM_LOCK,
-    VERIFY_LOCK,
-
-    COMPLETE,
-    ERROR
-};
-
-enum class ParameterResult : uint8_t
-{
-    IDLE,
-    BUSY,
-    SUCCESS,
-    FAILED
 };
 
 enum class MotorInitState : uint8_t
@@ -316,31 +290,8 @@ private:
 
 #endif
 
-public:
-    esp_err_t BeginSetParameter(
-        uint8_t servo_id,
-        ST3215Register address,
-        const uint8_t* data,
-        size_t data_size,
-        RegisterStorage storage);
-
-    ParameterResult GetParameterResult() const;
-
-    void ProcessParameterFSM();
-
-    esp_err_t SetOperatingMode(
-        uint8_t servo_id,
-        ST3215Mode mode);
-
-    esp_err_t SetTorqueEnable(
-        uint8_t servo_id,
-        bool enable);
-
-    esp_err_t SetTorqueLimit(
-        uint8_t servo_id,
-        uint16_t limit);
-
 private:
+    // UART owner: used only inside MotorInterface INIT / ServoTask.
     ST3215ParameterFSM parameter_fsm_{};
 
 };

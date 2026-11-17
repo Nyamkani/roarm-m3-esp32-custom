@@ -9,11 +9,13 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
+#include <cmath>
 
 #include "st3215.h"
 #include "shared_snapshot.h"
 #include "st3215_parameter_fsm.h"
-
+#include "pid.h"
 
 #include "gpio_config.h"
 #include "freertos/task.h"
@@ -24,7 +26,6 @@
 #include "esp_err.h"
 
 #include "driver/uart.h"
-
 
 
 #define MOTOR_COUNT 7
@@ -293,5 +294,29 @@ private:
 private:
     // UART owner: used only inside MotorInterface INIT / ServoTask.
     ST3215ParameterFSM parameter_fsm_{};
+
+private:
+    static constexpr int64_t COMMAND_TIMEOUT_US = 100000;
+    static constexpr int64_t FEEDBACK_TIMEOUT_US = 30000;
+
+    static constexpr int16_t PWM_MIN = -1000;
+    static constexpr int16_t PWM_MAX = 1000;
+
+    bool ValidateCommand(
+        const SharedSnapshotFrame<MotorCommandFrame>& frame,
+        int64_t now_us) const;
+
+    bool ValidateFeedback(
+        const MotorFeedbackFrame& frame,
+        int64_t now_us) const;
+
+private:
+    PIDController2 motor_pid_[MOTOR_COUNT]{};
+
+    int64_t last_pid_update_us_ = 0;
+
+    void InitializePID();
+    void ResetPID();
+    void ProcessPID(float dt);
 
 };

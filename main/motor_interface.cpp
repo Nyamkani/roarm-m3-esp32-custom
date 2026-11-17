@@ -553,30 +553,68 @@ void MotorInterface::CommNextMotor()
 
 void MotorInterface::CommProcess()
 {
-    // 6축 피드백 검증
-    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    const int64_t now_us = esp_timer_get_time();
+
+    // 1. Feedback validation
+    if (!ValidateFeedback(cycle_feedback_, now_us))
     {
-        if (!cycle_feedback_.motors[i].valid)
-        {
-            HandleCommunicationFailure();
-            return;
-        }
+        ResetPID();
+        output_inhibit_ = true;
+        HandleCommunicationFailure();
+        return;
     }
 
+    // 2. Command validation
     SharedSnapshotFrame<MotorCommandFrame> cmd_frame{};
 
-    command_valid_ = command_snapshot_.Read(cmd_frame);
+    command_valid_ =
+        command_snapshot_.Read(cmd_frame) &&
+        ValidateCommand(cmd_frame, now_us);
 
-    if (command_valid_)
+    if (!command_valid_)
     {
-        cycle_command_ = cmd_frame.data;
+        ResetPID();
+
+        cycle_command_ = {};
+        output_inhibit_ = true;
+
+        comm_state_ = MotorCommState::SYNC_WRITE;
+        return;
     }
 
-    output_inhibit_ = false;
+    cycle_command_ = cmd_frame.data;
 
-    // TODO:
-    // 6축 외부 PID 연산
-    // 목표 위치와 실제 피드백을 이용한 PWM 계산
+    // 3. PID update timing
+    if (last_pid_update_us_ == 0)
+    {
+        last_pid_update_us_ = now_us;
+        output_inhibit_ = true;
+
+        comm_state_ = MotorCommState::SYNC_WRITE;
+        return;
+    }
+
+    const float dt =
+        static_cast<float>(now_us - last_pid_update_us_)
+        * 1.0e-6f;
+
+    if (!std::isfinite(dt) ||
+        dt <= 0.0f ||
+        dt > 0.03f)
+    {
+        ResetPID();
+        output_inhibit_ = true;
+
+        comm_state_ = MotorCommState::SYNC_WRITE;
+        return;
+    }
+
+    // 4. PID calculation
+    ProcessPID(dt);
+
+    last_pid_update_us_ = now_us;
+
+    output_inhibit_ = false;
 
     comm_state_ = MotorCommState::SYNC_WRITE;
 }
@@ -591,8 +629,14 @@ esp_err_t MotorInterface::SendSyncPWM(
     {
         ids[i] = motors_[i].GetID();
 
-        const esp_err_t ret = ST3215::EncodePWM(
+        const int16_t limited_output = std::clamp(
             command.motors[i].output,
+            PWM_MIN,
+            PWM_MAX
+        );
+
+        const esp_err_t ret = ST3215::EncodePWM(
+            limited_output,
             &pwm_data[i * PWM_OUTPUT_SIZE]);
 
         if (ret != ESP_OK)
@@ -678,8 +722,6 @@ void MotorInterface::CommComplete()
     // All six feedback responses were validated.
     feedback_snapshot_.Write(cycle_feedback_);
 
-    // Allow normal output updates again.
-    output_inhibit_ = false;
 
     comm_state_ = MotorCommState::IDLE;
 }
@@ -729,6 +771,7 @@ void MotorInterface::HandleCommunicationFailure()
     if (state_ == MotorInterfaceState::ERROR)
         return;
 
+    ResetPID();
 #if MOTOR_PERF_LOG_ENABLE
     ++perf_.error_count;
 #endif
@@ -761,6 +804,8 @@ void MotorInterface::EnterError()
 {
     if (state_ == MotorInterfaceState::ERROR)
         return;
+
+    ResetPID();
 
 #if MOTOR_PERF_LOG_ENABLE
     // Count immediate fatal errors, but avoid recounting the
@@ -983,4 +1028,96 @@ void MotorInterface::ProcessMotorInitialization()
             EnterError();
             break;
     }
+}
+
+bool MotorInterface::ValidateCommand(
+    const SharedSnapshotFrame<MotorCommandFrame>& frame,
+    int64_t now_us) const
+{
+    if (!frame.valid)
+        return false;
+
+    const int64_t age_us = now_us - frame.timestamp_us;
+
+    return age_us >= 0 && age_us <= COMMAND_TIMEOUT_US;
+}
+
+bool MotorInterface::ValidateFeedback(
+    const MotorFeedbackFrame& frame,
+    int64_t now_us) const
+{
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        const MotorFeedback& fb = frame.motors[i];
+
+        if (!fb.valid)
+            return false;
+
+        const int64_t age_us = now_us - fb.timestamp_us;
+
+        if (age_us < 0 || age_us > FEEDBACK_TIMEOUT_US)
+            return false;
+    }
+
+    return true;
+}
+
+void MotorInterface::InitializePID()
+{
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        motor_pid_[i].SetGains(
+            PIDGains{0.0f, 0.0f, 0.0f}
+        );
+
+        motor_pid_[i].SetLimits(
+            PIDLimits{
+                -100.0f, 100.0f,
+                -1000.0f, 1000.0f
+            }
+        );
+
+        motor_pid_[i].Reset();
+    }
+}
+
+void MotorInterface::ProcessPID(float dt)
+{
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        const float target =
+            static_cast<float>(
+                cycle_command_.motors[i].target_position
+            );
+
+        const float actual =
+            static_cast<float>(
+                cycle_feedback_.motors[i].position
+            );
+
+        const float output = motor_pid_[i].Update(
+            target,
+            actual,
+            dt
+        );
+
+        const float limited = std::clamp(
+            output,
+            -1000.0f,
+            1000.0f
+        );
+
+        cycle_command_.motors[i].output =
+            static_cast<int16_t>(std::lround(limited));
+    }
+}
+
+void MotorInterface::ResetPID()
+{
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        motor_pid_[i].Reset();
+    }
+
+    last_pid_update_us_ = 0;
 }

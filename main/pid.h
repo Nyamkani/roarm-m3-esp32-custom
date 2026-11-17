@@ -218,8 +218,8 @@ class PIDController2
 
             float i_scale = 1.0f;
 
-            constexpr float I_ZONE = 0.25f;
-            if (std::fabs(error) > I_ZONE)
+            // Zero disables the drone-specific I-zone scaling for raw encoder counts.
+            if (i_zone_ > 0.0f && std::fabs(error) > i_zone_)
             {
                 i_scale *= 0.20f;
             }
@@ -326,7 +326,14 @@ class PIDController2
 
         inline void SetIntegralLeak(float leak_per_sec)
         {
-            i_leak_per_sec_ = std::max(0.0f, leak_per_sec);
+            if (std::isfinite(leak_per_sec))
+                i_leak_per_sec_ = std::max(0.0f, leak_per_sec);
+        }
+
+        inline void SetIntegralZone(float zone)
+        {
+            if (std::isfinite(zone))
+                i_zone_ = std::max(0.0f, zone);
         }
 
         inline float GetIntegral() const
@@ -377,5 +384,6 @@ class PIDController2
 
         float d_filter_alpha_ = 0.7f;
         bool first_update_ = true;
-        float i_leak_per_sec_= 0.0f;
+        float i_leak_per_sec_ = 0.3f;
+        float i_zone_ = 0.25f;
 };

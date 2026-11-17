@@ -19,6 +19,10 @@ esp_err_t MotorInterface::Initialize(
             return ret;
     }
 
+    // Configure PID before ServoTask can run; initial INIT entry is one-shot.
+    InitializePID();
+    EnterState(MotorInterfaceState::INIT);
+
 #if MOTOR_IO_MODE == MOTOR_IO_TASK
 
     BaseType_t ret = xTaskCreatePinnedToCore(
@@ -274,6 +278,86 @@ ServoReceiveStatus MotorInterface::ReceiveResponse(ST3215Response& response, int
 
 
 
+
+void MotorInterface::ChangeState(MotorInterfaceState next)
+{
+    if (state_ == next)
+        return;
+
+    ExitState(state_);
+    state_ = next;
+    EnterState(next);
+}
+
+void MotorInterface::EnterState(MotorInterfaceState state)
+{
+    switch (state)
+    {
+        case MotorInterfaceState::INIT:
+            init_state_ = MotorInitState::START;
+            init_motor_index_ = 0;
+            command_valid_ = false;
+            control_valid_ = false;
+            output_inhibit_ = true;
+            ResetPID();
+            break;
+
+        case MotorInterfaceState::READY:
+            ChangeCommState(MotorCommState::IDLE);
+            current_motor_index_ = 0;
+            output_inhibit_ = true;
+            break;
+
+        case MotorInterfaceState::RUNNING:
+            ResetPID();
+            control_valid_ = false;
+            command_valid_ = false;
+            output_inhibit_ = true;
+            last_comm_cycle_us_ = 0;
+            break;
+
+        case MotorInterfaceState::ERROR:
+            ResetPID();
+            control_valid_ = false;
+            command_valid_ = false;
+            cycle_command_ = {};
+            output_inhibit_ = true;
+            break;
+    }
+}
+
+void MotorInterface::ExitState(MotorInterfaceState state)
+{
+    if (state == MotorInterfaceState::RUNNING)
+        output_inhibit_ = true;
+}
+
+void MotorInterface::ChangeCommState(MotorCommState next)
+{
+    if (comm_state_ == next)
+        return;
+
+    ExitCommState(comm_state_);
+    comm_state_ = next;
+    EnterCommState(next);
+}
+
+void MotorInterface::EnterCommState(MotorCommState state)
+{
+    // Only on transition: avoid restarting the receive/recovery timers per poll.
+    if (state == MotorCommState::RX_RECOVERY)
+    {
+        rx_recovery_start_us_ = esp_timer_get_time();
+        output_inhibit_ = true;
+    }
+}
+
+void MotorInterface::ExitCommState(MotorCommState state)
+{
+    if (state == MotorCommState::WAIT_RESPONSE)
+        ResetReceive();
+}
+
 void MotorInterface::ProcessInterfaceFSM()
 {
     switch (state_)
@@ -310,14 +394,14 @@ void MotorInterface::StateInit()
         return;
     }
 
-    comm_state_ = MotorCommState::IDLE;
+    ChangeCommState(MotorCommState::IDLE);
     current_motor_index_ = 0;
-    state_ = MotorInterfaceState::READY;
+    ChangeState(MotorInterfaceState::READY);
 }
 
 void MotorInterface::StateReady()
 {
-    state_ = MotorInterfaceState::RUNNING;
+    ChangeState(MotorInterfaceState::RUNNING);
 }
 
 void MotorInterface::StateRunning()
@@ -355,9 +439,7 @@ void MotorInterface::ProcessCommunicationFSM()
 #if MOTOR_PERF_LOG_ENABLE
             ++perf_.cycle_timeout_count;
 #endif
-            rx_recovery_start_us_ = esp_timer_get_time();
-            comm_state_ = MotorCommState::RX_RECOVERY;
-            output_inhibit_ = true;
+            ChangeCommState(MotorCommState::RX_RECOVERY);
             return;
         }
 
@@ -431,7 +513,7 @@ void MotorInterface::CommIdle()
     // from the previous cycle.
     cycle_feedback_ = {};
 
-    comm_state_ = MotorCommState::SEND_REQUEST;
+    ChangeCommState(MotorCommState::SEND_REQUEST);
 }
 
 
@@ -439,7 +521,7 @@ void MotorInterface::CommSendRequest()
 {
     if (current_motor_index_ >= MOTOR_COUNT)
     {
-        comm_state_ = MotorCommState::COMPLETE;
+        ChangeCommState(MotorCommState::COMPLETE);
         return;
     }
 
@@ -490,7 +572,7 @@ void MotorInterface::CommSendRequest()
 
     BeginReceive(request.id, request.data_size);
 
-    comm_state_ = MotorCommState::WAIT_RESPONSE;
+    ChangeCommState(MotorCommState::WAIT_RESPONSE);
 }
 
 
@@ -507,9 +589,7 @@ void MotorInterface::CommWaitResponse()
 
     if (result != ServoReceiveStatus::COMPLETE)
     {
-        rx_recovery_start_us_ = esp_timer_get_time();
-        comm_state_ = MotorCommState::RX_RECOVERY;
-        output_inhibit_ = true;
+        ChangeCommState(MotorCommState::RX_RECOVERY);
         return;
     }
 
@@ -523,9 +603,7 @@ void MotorInterface::CommWaitResponse()
 
     if (ret != ESP_OK)
     {
-        rx_recovery_start_us_ = esp_timer_get_time();
-        comm_state_ = MotorCommState::RX_RECOVERY;
-        output_inhibit_ = true;
+        ChangeCommState(MotorCommState::RX_RECOVERY);
         return;
     }
 
@@ -534,7 +612,7 @@ void MotorInterface::CommWaitResponse()
     cycle_feedback_.motors[current_motor_index_] =
         feedback;
 
-    comm_state_ = MotorCommState::NEXT_MOTOR;
+    ChangeCommState(MotorCommState::NEXT_MOTOR);
 }
 
 void MotorInterface::CommNextMotor()
@@ -543,11 +621,11 @@ void MotorInterface::CommNextMotor()
 
     if (current_motor_index_ < MOTOR_COUNT)
     {
-        comm_state_ = MotorCommState::SEND_REQUEST;
+        ChangeCommState(MotorCommState::SEND_REQUEST);
     }
     else
     {
-        comm_state_ = MotorCommState::PROCESS;
+        ChangeCommState(MotorCommState::PROCESS);
     }
 }
 
@@ -558,8 +636,6 @@ void MotorInterface::CommProcess()
     // 1. Feedback validation
     if (!ValidateFeedback(cycle_feedback_, now_us))
     {
-        ResetPID();
-        output_inhibit_ = true;
         HandleCommunicationFailure();
         return;
     }
@@ -573,16 +649,16 @@ void MotorInterface::CommProcess()
 
     if (!command_valid_)
     {
-        ResetPID();
-
+        ChangeControlValidity(false);
         cycle_command_ = {};
         output_inhibit_ = true;
 
-        comm_state_ = MotorCommState::SYNC_WRITE;
+        ChangeCommState(MotorCommState::SYNC_WRITE);
         return;
     }
 
     cycle_command_ = cmd_frame.data;
+    ChangeControlValidity(true);
 
     // 3. PID update timing
     if (last_pid_update_us_ == 0)
@@ -590,7 +666,7 @@ void MotorInterface::CommProcess()
         last_pid_update_us_ = now_us;
         output_inhibit_ = true;
 
-        comm_state_ = MotorCommState::SYNC_WRITE;
+        ChangeCommState(MotorCommState::SYNC_WRITE);
         return;
     }
 
@@ -602,21 +678,28 @@ void MotorInterface::CommProcess()
         dt <= 0.0f ||
         dt > 0.03f)
     {
-        ResetPID();
+        ChangeControlValidity(false);
         output_inhibit_ = true;
 
-        comm_state_ = MotorCommState::SYNC_WRITE;
+        ChangeCommState(MotorCommState::SYNC_WRITE);
         return;
     }
 
-    // 4. PID calculation
-    ProcessPID(dt);
+    // 4. PID calculation: never allow non-finite values into integer PWM.
+    if (!ProcessPID(dt))
+    {
+        ChangeControlValidity(false);
+        cycle_command_ = {};
+        output_inhibit_ = true;
+        ChangeCommState(MotorCommState::SYNC_WRITE);
+        return;
+    }
 
     last_pid_update_us_ = now_us;
 
     output_inhibit_ = false;
 
-    comm_state_ = MotorCommState::SYNC_WRITE;
+    ChangeCommState(MotorCommState::SYNC_WRITE);
 }
 
 esp_err_t MotorInterface::SendSyncPWM(
@@ -678,7 +761,7 @@ void MotorInterface::CommSyncWrite()
 
     if (!command_valid_ || output_inhibit_)
     {
-        comm_state_ = MotorCommState::COMPLETE;
+        ChangeCommState(MotorCommState::COMPLETE);
         return;
     }
 
@@ -702,7 +785,7 @@ void MotorInterface::CommSyncWrite()
 
 #endif
 
-    comm_state_ = MotorCommState::COMPLETE;
+    ChangeCommState(MotorCommState::COMPLETE);
 }
 
 void MotorInterface::CommComplete()
@@ -723,7 +806,7 @@ void MotorInterface::CommComplete()
     feedback_snapshot_.Write(cycle_feedback_);
 
 
-    comm_state_ = MotorCommState::IDLE;
+    ChangeCommState(MotorCommState::IDLE);
 }
 
 
@@ -771,7 +854,7 @@ void MotorInterface::HandleCommunicationFailure()
     if (state_ == MotorInterfaceState::ERROR)
         return;
 
-    ResetPID();
+    ChangeControlValidity(false);
 #if MOTOR_PERF_LOG_ENABLE
     ++perf_.error_count;
 #endif
@@ -782,7 +865,7 @@ void MotorInterface::HandleCommunicationFailure()
     // Abort the current communication cycle.
     ResetReceive();
 
-    comm_state_ = MotorCommState::IDLE;
+    ChangeCommState(MotorCommState::IDLE);
     current_motor_index_ = 0;
 
     // Invalidate all feedback in this cycle.
@@ -805,7 +888,7 @@ void MotorInterface::EnterError()
     if (state_ == MotorInterfaceState::ERROR)
         return;
 
-    ResetPID();
+    // PID reset is handled once by EnterState(ERROR).
 
 #if MOTOR_PERF_LOG_ENABLE
     // Count immediate fatal errors, but avoid recounting the
@@ -816,10 +899,10 @@ void MotorInterface::EnterError()
     }
 #endif
 
-    state_ = MotorInterfaceState::ERROR;
+    ChangeState(MotorInterfaceState::ERROR);
     output_inhibit_ = true;
 
-    comm_state_ = MotorCommState::IDLE;
+    ChangeCommState(MotorCommState::IDLE);
     current_motor_index_ = 0;
 
     ResetReceive();
@@ -1066,6 +1149,8 @@ void MotorInterface::InitializePID()
 {
     for (size_t i = 0; i < MOTOR_COUNT; ++i)
     {
+        motor_pid_[i].SetIntegralLeak(0.3f);
+        motor_pid_[i].SetIntegralZone(0.0f); // disable angle-unit I-zone for raw encoder counts
         motor_pid_[i].SetGains(
             PIDGains{0.0f, 0.0f, 0.0f}
         );
@@ -1081,7 +1166,7 @@ void MotorInterface::InitializePID()
     }
 }
 
-void MotorInterface::ProcessPID(float dt)
+bool MotorInterface::ProcessPID(float dt)
 {
     for (size_t i = 0; i < MOTOR_COUNT; ++i)
     {
@@ -1101,15 +1186,30 @@ void MotorInterface::ProcessPID(float dt)
             dt
         );
 
+        if (!std::isfinite(output))
+            return false;
+
         const float limited = std::clamp(
             output,
-            -1000.0f,
-            1000.0f
+            static_cast<float>(PWM_MIN),
+            static_cast<float>(PWM_MAX)
         );
 
         cycle_command_.motors[i].output =
             static_cast<int16_t>(std::lround(limited));
     }
+
+    return true;
+}
+
+void MotorInterface::ChangeControlValidity(bool valid)
+{
+    if (control_valid_ == valid)
+        return;
+
+    control_valid_ = valid;
+    if (!valid)
+        ResetPID();
 }
 
 void MotorInterface::ResetPID()

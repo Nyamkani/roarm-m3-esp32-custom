@@ -215,6 +215,14 @@ private:
     void ProcessCommunicationFSM();
     void ProcessControlCycle();
 
+    void ChangeState(MotorInterfaceState next);
+    void EnterState(MotorInterfaceState state);
+    void ExitState(MotorInterfaceState state);
+
+    void ChangeCommState(MotorCommState next);
+    void EnterCommState(MotorCommState state);
+    void ExitCommState(MotorCommState state);
+
     void StateInit();
     void StateReady();
     void StateRunning();
@@ -260,6 +268,7 @@ private:
     MotorCommandFrame cycle_command_{};
 
     bool command_valid_ = false;
+    bool control_valid_ = false;  // edge-triggered PID reset on validity loss
     bool cycle_write_sent_ = false;
 
     static constexpr uint8_t PWM_OUTPUT_ADDRESS = 44;
@@ -317,6 +326,7 @@ private:
 
     void InitializePID();
     void ResetPID();
-    void ProcessPID(float dt);
+    bool ProcessPID(float dt);
+    void ChangeControlValidity(bool valid);
 
 };

@@ -72,3 +72,22 @@ RoArm-M3 ESP32 Custom Firmware 개발 기록입니다. **코드 구현**, **검�
 ### Safety and next tests
 
 Default EEPROM mode changes and PWM output remain disabled. Even with no writes, INIT requires seven connected servos with matching configured mode, so a fresh factory setup may fail verification as expected. No torque enable or automatic movement is performed. Before activating EEPROM writes or PWM output, verify mode/register semantics, suspended-arm safety, real servo response timing, and full 7-device 100Hz budget.
+
+
+## v0.13 follow-up — FSM transition hooks and PID validation
+
+- **Based on:** `v0.13` (`f2f38de`)
+- **Validation:** Source-level checks performed; local ESP-IDF build and hardware tests still required for this follow-up.
+
+### Changes
+- Added `ChangeState/ExitState/EnterState` for the MotorInterface INIT/READY/RUNNING/ERROR FSM. Hooks run only on actual state changes; initial INIT entry is invoked once during Initialize().
+- Added `ChangeCommState/ExitCommState/EnterCommState` for the communication FSM. RX_RECOVERY timestamp/inhibit are set on entry, and WAIT_RESPONSE receive context is released on exit. Existing sequential READ/TX ordering remains unchanged.
+- Added the previously missing `InitializePID()` call before ServoTask starts. Initial gains remain zero; PWM output stays compile-time disabled.
+- Preserved the drone PIDController2 I-Leak default (0.3/s). Made the I-zone configurable; disabled I-zone scaling for raw encoder counts pending tuning.
+- Added non-finite PID output validation before `lround`/PWM encoding. A failed calculation invalidates control and inhibits TX.
+- Added edge-triggered control-validity tracking to avoid repeated PID resets while commands remain stale. ERROR and RUNNING entry resets are one-shot; communication failures invalidate control.
+- Command freshness (100ms), feedback freshness (30ms), 7-motor limits and communication FSM behavior remain in place.
+
+### Safety / limitations
+- No autonomous motor enable, no validated physical safe-stop, no shoulder motor mapping, and no hardware performance verification. `MOTOR_PWM_OUTPUT_ENABLE=0`, `MOTOR_EEPROM_WRITE_ENABLE=0`, and `MOTOR_INIT_TORQUE_LIMIT_ENABLE=0` remain unchanged.
+- Firmware build on the developer's ESP-IDF 6.1 setup is required to confirm this follow-up revision.

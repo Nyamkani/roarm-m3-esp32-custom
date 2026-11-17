@@ -41,7 +41,7 @@ Orange Pi 5+ / KCF 기반 애플리케이션 (계획)
                  ▼
 RoArm-M3 ESP32 Custom Firmware
   - 7개 서보 피드백 수집 / Snapshot
-  - 외부 PID 및 관절 제어 (계획)
+  - 외부 PID 연산 경로 (구현, 물리 동작 미검증)
   - 다축 출력 / 오류 처리 / 안전 제한 (개발 중)
                  │
                  ▼
@@ -68,6 +68,8 @@ MotorInterface (FreeRTOS task + communication FSM)
   ├─ INIT: sequential mode verification / optional parameter transaction
   ├─ MotorFeedbackFrame / TripleSnapshot
   ├─ Communication error counter / ERROR state
+  ├─ PIDController2 × 7 (zero gains by default; command/feedback freshness)
+  ├─ ChangeState / EnterState / ExitState (interface and comm FSM)
   └─ Performance logging (optional)
           │
           ▼
@@ -79,7 +81,7 @@ ST3215 (packet serializer / response parser / feedback decoder)
 
 ## Development Status
 
-**v0.12 — initialisation integration fixes (hardware test pending)**
+**v0.13 follow-up — PID / FSM transition consolidation (hardware test pending)**
 
 | Area | Status |
 | --- | --- |
@@ -90,7 +92,9 @@ ST3215 (packet serializer / response parser / feedback decoder)
 | 기본 초기화 모드 정책 | EEPROM WRITE 0, 현재 PWM_OPEN 모드 READ 검증 |
 | 토크 제한 설정 | 구현, 초기화 자동 WRITE 기본 비활성화 |
 | Command Snapshot → 7개 서보 SYNC_WRITE | 코드 경로 구현, PWM 출력 비활성화 |
-| 외부 PID, HOME/IDLE, 하드웨어 긴급 정지 | 미구현 |
+| 외부 PID 계산 (PIDController2 × 7) | 구현, 게인 0 기본값 / 물리 출력 비활성화 |
+| ChangeState/EnterState/ExitState (interface / comm) | 구현, 전환 시에만 훅 실행 |
+| HOME/IDLE, 하드웨어 긴급 정지 | 미구현 |
 | 실제 ESP-IDF 빌드 / 실물 서보 검증 | 이번 수정 기준 미검증 |
 
 기본값에서는 현재 모드가 목표 PWM_OPEN과 다르면 INIT이 실패하며, **EEPROM을 자동 변경하지 않습니다.** 토크 활성화 및 PWM 출력도 자동 실행하지 않습니다. 실물 구동 전에는 토크 해제 시 중력 낙하 위험, 직접 PWM 제어 적합성, 통신·정지 안전 조건을 별도로 확인해야 합니다.
@@ -102,7 +106,8 @@ main/
 ├── main.cpp               # app_main / board initialization
 ├── gpio_config.*          # board UART initialization
 ├── pins.h                 # board pin configuration
-├── motor_interface.*      # seven-servo init / communication FSM
+├── motor_interface.*      # seven-servo init / communication FSM, PID integration
+├── pid.h                  # reusable PIDController2 (from kssdrone v1.3)
 ├── st3215.*               # ST3215 packet protocol and motor data
 ├── st3215_parameter_fsm.* # parameter READ / WRITE / verify / EEPROM lock
 └── shared_snapshot.h      # shared / triple snapshot utilities

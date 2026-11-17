@@ -35,6 +35,7 @@ public:
     // READ + compare only. Never performs WRITE, including EEPROM unlock.
     esp_err_t VerifyOperatingMode(uint8_t id, Mode mode);
     esp_err_t SetTorqueEnable(uint8_t id, bool enabled);
+    esp_err_t VerifyTorqueEnable(uint8_t id, bool enabled);
     esp_err_t SetTorqueLimit(uint8_t id, uint16_t limit);
     // Position-offset writes intentionally require an explicit maintenance path.
     Result Poll();

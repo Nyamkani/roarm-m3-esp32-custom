@@ -44,6 +44,9 @@ esp_err_t MotorInterface::Initialize(
     return ESP_OK;
 }
 
+void MotorInterface::RequestServoOn() { servo_request_.store(ServoRequest::ON); }
+void MotorInterface::RequestServoOff() { servo_request_.store(ServoRequest::OFF); }
+
 ST3215* MotorInterface::GetMotor(size_t index)
 {
     if (index >= MOTOR_COUNT)
@@ -286,6 +289,7 @@ void MotorInterface::ChangeState(MotorInterfaceState next)
 
     ExitState(state_);
     state_ = next;
+    state_public_.store(next);
     EnterState(next);
 }
 
@@ -296,39 +300,60 @@ void MotorInterface::EnterState(MotorInterfaceState state)
         case MotorInterfaceState::INIT:
             init_state_ = MotorInitState::START;
             init_motor_index_ = 0;
+            output_inhibit_ = true;
             command_valid_ = false;
             control_valid_ = false;
-            output_inhibit_ = true;
             ResetPID();
             break;
-
         case MotorInterfaceState::READY:
-            ChangeCommState(MotorCommState::IDLE);
-            current_motor_index_ = 0;
             output_inhibit_ = true;
+            torque_index_ = 0;
+            torque_busy_ = false;
+            torque_off_verified_ = false;
             break;
-
-        case MotorInterfaceState::RUNNING:
-            ResetPID();
-            control_valid_ = false;
-            command_valid_ = false;
+        case MotorInterfaceState::DISARMED:
             output_inhibit_ = true;
+            command_valid_ = false;
+            control_valid_ = false;
+            cycle_command_ = {};
+            ResetPID();
+            ChangeCommState(MotorCommState::IDLE);
             last_comm_cycle_us_ = 0;
             break;
-
-        case MotorInterfaceState::ERROR:
+        case MotorInterfaceState::ARMING:
+            output_inhibit_ = true;
+            ResetPID();
+            torque_index_ = 0;
+            torque_busy_ = false;
+            break;
+        case MotorInterfaceState::ARMED:
             ResetPID();
             control_valid_ = false;
             command_valid_ = false;
-            cycle_command_ = {};
             output_inhibit_ = true;
+            ChangeCommState(MotorCommState::IDLE);
+            last_comm_cycle_us_ = 0;
+            break;
+        case MotorInterfaceState::DISARMING:
+            output_inhibit_ = true;
+            ResetPID();
+            torque_index_ = 0;
+            torque_busy_ = false;
+            break;
+        case MotorInterfaceState::ERROR:
+            output_inhibit_ = true;
+            torque_off_verified_ = false;
+            command_valid_ = false;
+            control_valid_ = false;
+            cycle_command_ = {};
+            ResetPID();
             break;
     }
 }
 
 void MotorInterface::ExitState(MotorInterfaceState state)
 {
-    if (state == MotorInterfaceState::RUNNING)
+    if (state == MotorInterfaceState::ARMED)
         output_inhibit_ = true;
 }
 
@@ -362,72 +387,157 @@ void MotorInterface::ProcessInterfaceFSM()
 {
     switch (state_)
     {
-        case MotorInterfaceState::INIT:
-            StateInit();
-            break;
-
-        case MotorInterfaceState::READY:
-            StateReady();
-            break;
-
-        case MotorInterfaceState::RUNNING:
-            StateRunning();
-            break;
-
-        case MotorInterfaceState::ERROR:
-            StateError();
-            break;
+        case MotorInterfaceState::INIT: StateInit(); break;
+        case MotorInterfaceState::READY: StateReady(); break;
+        case MotorInterfaceState::DISARMED: StateDisarmed(); break;
+        case MotorInterfaceState::ARMING: StateArming(); break;
+        case MotorInterfaceState::ARMED: StateArmed(); break;
+        case MotorInterfaceState::DISARMING: StateDisarming(); break;
+        case MotorInterfaceState::ERROR: StateError(); break;
     }
 }
 
 void MotorInterface::StateInit()
 {
-    // Board UART / motor initialization
-    // is already performed by Initialize().
-
     ProcessMotorInitialization();
-
-    // Only enter RUNNING after every servo passed INIT verification.
-    if (state_ == MotorInterfaceState::ERROR ||
-        init_state_ != MotorInitState::COMPLETE)
+    if (state_ == MotorInterfaceState::INIT &&
+        init_state_ == MotorInitState::COMPLETE)
     {
-        return;
+        ChangeCommState(MotorCommState::IDLE);
+        current_motor_index_ = 0;
+        ChangeState(MotorInterfaceState::READY);
     }
+}
 
-    ChangeCommState(MotorCommState::IDLE);
-    current_motor_index_ = 0;
-    ChangeState(MotorInterfaceState::READY);
+bool MotorInterface::PollTorque(bool enabled, bool verify_only)
+{
+    if (torque_index_ >= MOTOR_COUNT)
+        return true;
+    if (!torque_busy_)
+    {
+        const uint8_t id = motors_[torque_index_].GetID();
+        const esp_err_t ret = verify_only ?
+            parameter_fsm_.VerifyTorqueEnable(id, enabled) :
+            parameter_fsm_.SetTorqueEnable(id, enabled);
+        if (ret != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Torque transaction request failed id=%u", static_cast<unsigned>(id));
+            EnterError();
+            return false;
+        }
+        torque_busy_ = true;
+    }
+    const auto result = parameter_fsm_.Poll();
+    if (result == ST3215ParameterFSM::Result::FAILED)
+    {
+        ESP_LOGE(TAG, "Torque verification failed id=%u err=%s",
+                 static_cast<unsigned>(parameter_fsm_.GetServoID()),
+                 esp_err_to_name(parameter_fsm_.GetError()));
+        EnterError();
+        return false;
+    }
+    if (result == ST3215ParameterFSM::Result::SUCCESS)
+    {
+        torque_busy_ = false;
+        ++torque_index_;
+    }
+    return torque_index_ >= MOTOR_COUNT;
 }
 
 void MotorInterface::StateReady()
 {
-    ChangeState(MotorInterfaceState::RUNNING);
+    // No automatic torque OFF at boot: first verify all seven are OFF by READ.
+    if (PollTorque(false, true))
+    {
+        torque_off_verified_ = true;
+        ChangeState(MotorInterfaceState::DISARMED);
+    }
 }
 
-void MotorInterface::StateRunning()
+void MotorInterface::StateDisarmed()
 {
+    if (comm_state_ == MotorCommState::IDLE)
+    {
+        const ServoRequest req = servo_request_.exchange(ServoRequest::NONE);
+        if (req == ServoRequest::ON)
+        {
+#if MOTOR_TORQUE_WRITE_ENABLE
+            SharedSnapshotFrame<MotorCommandFrame> cmd{};
+            SharedSnapshotFrame<MotorFeedbackFrame> fb{};
+            const int64_t now = esp_timer_get_time();
+            if (torque_off_verified_ &&
+                command_snapshot_.Read(cmd) && ValidateCommand(cmd, now) &&
+                feedback_snapshot_.Read(fb) && ValidateFeedback(fb.data, now))
+            {
+                ChangeState(MotorInterfaceState::ARMING);
+                return;
+            }
+            ESP_LOGW(TAG, "ARM rejected: invalid command, feedback or torque OFF");
+#else
+            ESP_LOGW(TAG, "ARM rejected: MOTOR_TORQUE_WRITE_ENABLE=0");
+#endif
+        }
+    }
     UpdateCommunicationError();
     ProcessCommunicationFSM();
+}
 
-    if (state_ != MotorInterfaceState::RUNNING)
+void MotorInterface::StateArming()
+{
+#if MOTOR_TORQUE_WRITE_ENABLE
+    if (servo_request_.exchange(ServoRequest::NONE) == ServoRequest::OFF)
+    {
+        // A partial ARM must enter explicit rollback; do not report DISARMED.
+        ChangeState(MotorInterfaceState::DISARMING);
         return;
+    }
+    if (PollTorque(true, false))
+    {
+        torque_off_verified_ = false;
+        ChangeState(MotorInterfaceState::ARMED);
+    }
+#else
+    EnterError();
+#endif
+}
+
+void MotorInterface::StateArmed()
+{
+    if (comm_state_ == MotorCommState::IDLE &&
+        servo_request_.exchange(ServoRequest::NONE) == ServoRequest::OFF)
+    {
+        ChangeState(MotorInterfaceState::DISARMING);
+        return;
+    }
+    UpdateCommunicationError();
+    ProcessCommunicationFSM();
+}
+
+void MotorInterface::StateDisarming()
+{
+#if MOTOR_TORQUE_WRITE_ENABLE
+    if (PollTorque(false, false))
+    {
+        torque_off_verified_ = true;
+        ChangeState(MotorInterfaceState::DISARMED);
+    }
+#else
+    EnterError();
+#endif
 }
 
 void MotorInterface::StateError()
 {
-    // Communication recovery / safe output
-    // will be implemented after the
-    // communication FSM is connected.
+    // TX inhibit does not guarantee actual motors are torque OFF.
+    output_inhibit_ = true;
 }
-
-
-
 
 void MotorInterface::ProcessCommunicationFSM()
 {
     while (true)
     {
-        if (state_ != MotorInterfaceState::RUNNING)
+        if (state_ != MotorInterfaceState::DISARMED &&
+            state_ != MotorInterfaceState::ARMED)
             return;
 
         if (comm_state_ != MotorCommState::IDLE &&
@@ -640,6 +750,17 @@ void MotorInterface::CommProcess()
         return;
     }
 
+    // DISARMED still publishes feedback but cannot run PID or output PWM.
+    if (state_ != MotorInterfaceState::ARMED)
+    {
+        ChangeControlValidity(false);
+        command_valid_ = false;
+        cycle_command_ = {};
+        output_inhibit_ = true;
+        ChangeCommState(MotorCommState::COMPLETE);
+        return;
+    }
+
     // 2. Command validation
     SharedSnapshotFrame<MotorCommandFrame> cmd_frame{};
 
@@ -759,7 +880,9 @@ void MotorInterface::CommSyncWrite()
 {
 #if MOTOR_PWM_OUTPUT_ENABLE
 
-    if (!command_valid_ || output_inhibit_)
+    if (state_ != MotorInterfaceState::ARMED ||
+        servo_request_.load() == ServoRequest::OFF ||
+        !command_valid_ || output_inhibit_)
     {
         ChangeCommState(MotorCommState::COMPLETE);
         return;
@@ -916,9 +1039,8 @@ void MotorInterface::EnterError()
 
     feedback_snapshot_.Write(cycle_feedback_);
 
-    // TODO:
-    // SendEmergencyStop() - six-axis PWM zero.
-    // Implement after verifying ST3215 PWM mode/registers.
+    // Physical torque may remain ON after partial ARM or communication failure.
+    // Safe stop requires later hardware validation.
 }
 
 void MotorInterface::CommRxRecovery()

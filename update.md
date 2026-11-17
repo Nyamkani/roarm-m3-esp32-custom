@@ -91,3 +91,13 @@ Default EEPROM mode changes and PWM output remain disabled. Even with no writes,
 ### Safety / limitations
 - No autonomous motor enable, no validated physical safe-stop, no shoulder motor mapping, and no hardware performance verification. `MOTOR_PWM_OUTPUT_ENABLE=0`, `MOTOR_EEPROM_WRITE_ENABLE=0`, and `MOTOR_INIT_TORQUE_LIMIT_ENABLE=0` remain unchanged.
 - Firmware build on the developer's ESP-IDF 6.1 setup is required to confirm this follow-up revision.
+
+
+## v0.14 — unified MotorInterface ARM/DISARM FSM
+
+- Extended `MotorInterfaceState` with DISARMED/ARMING/ARMED/DISARMING, replacing RUNNING. Uses existing EnterState/ExitState hooks on actual state changes.
+- READY: READ-only verification of Torque Enable OFF for servo IDs 11–17. Never automatically cuts torque at boot; mismatch enters ERROR.
+- DISARMED: keep feedback polling, PID/PWM suppressed. ARMED: command/feedback validated PID and conditional PWM. ARMING/DISARMING: UART-exclusive per-servo torque WRITE + READ BACK via ST3215ParameterFSM.
+- Added atomic RequestServoOn/RequestServoOff and GetState, plus VerifyTorqueEnable read-only helper.
+- Writes disabled by default (MOTOR_TORQUE_WRITE_ENABLE=0), PWM output stays disabled; no automatic physical movement. Partial ARM failure does not guarantee torque off.
+- GitHub source update only; ESP-IDF v6.1 build/hardware timing and safe-stop behavior remain unverified.

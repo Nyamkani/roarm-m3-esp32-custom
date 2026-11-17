@@ -70,6 +70,8 @@ MotorInterface (FreeRTOS task + communication FSM)
   ├─ Communication error counter / ERROR state
   ├─ PIDController2 × 7 (zero gains by default; command/feedback freshness)
   ├─ ChangeState / EnterState / ExitState (interface and comm FSM)
+  ├─ READY: READ-only torque OFF verification for all seven servos
+  ├─ DISARMED/ARMING/ARMED/DISARMING within MotorInterfaceState
   └─ Performance logging (optional)
           │
           ▼
@@ -81,7 +83,7 @@ ST3215 (packet serializer / response parser / feedback decoder)
 
 ## Development Status
 
-**v0.13 follow-up — PID / FSM transition consolidation (hardware test pending)**
+**v0.14 — unified Servo ARM/DISARM FSM (hardware test pending)**
 
 | Area | Status |
 | --- | --- |
@@ -125,3 +127,13 @@ idf.py build
 빌드·플래시·실물 동작 여부는 환경 및 연결된 보드에서 별도로 검증해야 합니다.
 
 개발 내역과 이후 변경 계획은 [update.md](update.md)를 참고하세요.
+
+
+### Servo ARM/DISARM FSM (v0.14)
+
+- Integrated `DISARMED, ARMING, ARMED, DISARMING` into the existing `MotorInterfaceState`; no separate servo-control FSM. Existing ChangeState/EnterState/ExitState hooks are retained.
+- READY first READ-verifies Torque Enable=OFF on all seven servos, then enters DISARMED. A servo that is initially ON causes ERROR rather than automatically disabling torque and risking gravitational fall.
+- DISARMED continues sequential feedback READ. Only ARMED can compute PID and pass the PWM transmit gate. ARMING/DISARMING stop normal communication and own the single UART through `ST3215ParameterFSM` Torque Enable WRITE + READ BACK per servo.
+- `RequestServoOn()`, `RequestServoOff()` use atomic requests; ARM preconditions include current valid command/feedback. No automatic ARM at boot.
+- **Safety defaults:** `MOTOR_TORQUE_WRITE_ENABLE=0`, `MOTOR_PWM_OUTPUT_ENABLE=0`, `MOTOR_EEPROM_WRITE_ENABLE=0`. ARM requests are rejected until hardware safety is validated.
+- Partial torque activation may persist on ERROR; a physically tested safe-stop/rollback and gravity-safe support remain required before enabling torque writes.

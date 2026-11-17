@@ -78,6 +78,11 @@ esp_err_t ST3215ParameterFSM::SetTorqueEnable(uint8_t id, bool enabled)
     const uint8_t value = enabled ? 1 : 0;
     return Begin(id, Register::TORQUE_ENABLE, &value, 1, Storage::RAM);
 }
+esp_err_t ST3215ParameterFSM::VerifyTorqueEnable(uint8_t id, bool enabled)
+{
+    const uint8_t value = enabled ? 1 : 0;
+    return Begin(id, Register::TORQUE_ENABLE, &value, 1, Storage::RAM, true);
+}
 esp_err_t ST3215ParameterFSM::SetTorqueLimit(uint8_t id, uint16_t limit)
 {
     if (limit > 1000) return ESP_ERR_INVALID_ARG;

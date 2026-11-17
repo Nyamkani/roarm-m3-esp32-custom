@@ -38,6 +38,7 @@
 #define MOTOR_TASK_PERIOD_MS 1
 
 #define MOTOR_PWM_OUTPUT_ENABLE 0
+#define MOTOR_TORQUE_WRITE_ENABLE 0 // physical torque writes require explicit opt-in
 
 static constexpr int64_t CONTROL_PERIOD_US = 10000;
 static constexpr int64_t CYCLE_BUDGET_US   = 5000;
@@ -86,7 +87,10 @@ enum class MotorInterfaceState : uint8_t
 {
     INIT,
     READY,
-    RUNNING,
+    DISARMED,
+    ARMING,
+    ARMED,
+    DISARMING,
     ERROR
 };
 
@@ -131,6 +135,9 @@ public:
     esp_err_t Initialize(const board_handles_t& board);
 
     ST3215* GetMotor(size_t index);
+    void RequestServoOn();
+    void RequestServoOff();
+    MotorInterfaceState GetState() const { return state_public_.load(); }
 
 private:
     static void MainTask(void* arg);
@@ -200,6 +207,9 @@ private:
 private:
     MotorInterfaceState state_ =
         MotorInterfaceState::INIT;
+    std::atomic<MotorInterfaceState> state_public_{MotorInterfaceState::INIT};
+    enum class ServoRequest : uint8_t { NONE, ON, OFF };
+    std::atomic<ServoRequest> servo_request_{ServoRequest::NONE};
 
     MotorCommState comm_state_ =
         MotorCommState::IDLE;
@@ -225,8 +235,15 @@ private:
 
     void StateInit();
     void StateReady();
-    void StateRunning();
+    void StateDisarmed();
+    void StateArming();
+    void StateArmed();
+    void StateDisarming();
     void StateError();
+    bool PollTorque(bool enabled, bool verify_only);
+    size_t torque_index_ = 0;
+    bool torque_busy_ = false;
+    bool torque_off_verified_ = false;
 
     void CommIdle();
     void CommSendRequest();

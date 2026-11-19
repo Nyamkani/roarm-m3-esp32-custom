@@ -1,6 +1,12 @@
-
 idf_component_register(
-    SRC_DIRS "."
+    SRCS
+        "main.cpp"
+        "gpio_config.cpp"
+        "motor_interface.cpp"
+        "st3215.cpp"
+        "st3215_parameter_fsm.cpp"
+        "joint_mapper.cpp"
+
     INCLUDE_DIRS "."
 
     PRIV_REQUIRES

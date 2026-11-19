@@ -61,10 +61,70 @@ void MotorInterface::SetCommandFrame(
     command_snapshot_.Write(frame);
 }
 
+bool MotorInterface::SetJointTargets(
+    const JointAngles& target)
+{
+    ServoPositions positions{};
+
+    // 6개 관절 각도 → 7개 서보 목표 엔코더
+    if (!JointMapper::ToServoPositions(target, positions))
+    {
+        return false;
+    }
+
+    MotorCommandFrame command{};
+
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        command.motors[i].target_position =
+            positions.counts[i];
+    }
+
+    // 기존 Snapshot 경로 재사용
+    SetCommandFrame(command);
+
+    return true;
+}
+
+
 bool MotorInterface::GetFeedbackFrame(
     SharedSnapshotFrame<MotorFeedbackFrame>& out)
 {
     return feedback_snapshot_.Read(out);
+}
+
+bool MotorInterface::GetJointFeedback(
+    JointAngles& actual)
+{
+    SharedSnapshotFrame<MotorFeedbackFrame> frame{};
+
+    // 최신 피드백 Snapshot 조회
+    if (!GetFeedbackFrame(frame))
+    {
+        return false;
+    }
+
+    const int64_t now_us = esp_timer_get_time();
+
+    // 7개 서보의 유효성 및 Freshness 확인
+    if (!ValidateFeedback(frame.data, now_us))
+    {
+        return false;
+    }
+
+    ServoPositions positions{};
+
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        positions.counts[i] =
+            frame.data.motors[i].position;
+    }
+
+    // 7개 서보 엔코더 → 6개 실제 관절 각도
+    return JointMapper::ToJointAngles(
+        positions,
+        actual
+    );
 }
 
 void MotorInterface::MainTask(void* arg)

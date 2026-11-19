@@ -16,6 +16,8 @@
 #include "shared_snapshot.h"
 #include "st3215_parameter_fsm.h"
 #include "pid.h"
+#include "joint_mapper.h"
+
 
 #include "gpio_config.h"
 #include "freertos/task.h"
@@ -276,9 +278,12 @@ private:
 
 public:
     void SetCommandFrame(const MotorCommandFrame& frame);
+    bool SetJointTargets(const JointAngles& target);
+
 
     bool GetFeedbackFrame(
         SharedSnapshotFrame<MotorFeedbackFrame>& out);
+    bool GetJointFeedback(JointAngles& actual);
 
 private:
     MotorFeedbackFrame cycle_feedback_{};
@@ -345,5 +350,6 @@ private:
     void ResetPID();
     bool ProcessPID(float dt);
     void ChangeControlValidity(bool valid);
+
 
 };

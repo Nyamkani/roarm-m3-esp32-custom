@@ -101,3 +101,58 @@ Default EEPROM mode changes and PWM output remain disabled. Even with no writes,
 - Added atomic RequestServoOn/RequestServoOff and GetState, plus VerifyTorqueEnable read-only helper.
 - Writes disabled by default (MOTOR_TORQUE_WRITE_ENABLE=0), PWM output stays disabled; no automatic physical movement. Partial ARM failure does not guarantee torque off.
 - GitHub source update only; ESP-IDF v6.1 build/hardware timing and safe-stop behavior remain unverified.
+
+
+## v0.15 — JointMapper API
+
+- **Commit:** [`d6da7fd`](https://github.com/Nyamkani/roarm-m3-esp32-custom/commit/d6da7fd625ef55c7b10a4f2b141ce8f72296de15)
+- **Commit message:** `v0.15 add jointmapper api`
+- **Validation:** Source integration and build confirmed; hardware validation not performed.
+
+### Implemented
+
+- Added `JointAngles` (base, shoulder, elbow, wrist, roll, gripper) and `ServoPositions` for seven motor encoder values (IDs 11–17).
+- Added `JointMapper::ToServoPositions()` / `ToJointAngles()`: joint/encoder bidirectional conversion, range checks and coupled Shoulder feedback consistency.
+- Added `MotorInterface::SetJointTargets()` / `GetJointFeedback()` using existing command/feedback snapshots.
+- The mapper is a standalone conversion API; ServoTask, communication FSM and UART ownership are unchanged.
+
+### Limitations
+
+- Servo directions, zero offsets, motion ranges and Shoulder tolerance are based on source assumptions; verification with the physical arm is required.
+- Encoder mapping endpoints and feedback characteristics must be verified before enabling motor output.
+
+## v0.16 — IK/FK and JSON command interface
+
+- **Branch:** `main`
+- **Commit:** [`5aef6eb`](https://github.com/Nyamkani/roarm-m3-esp32-custom/commit/5aef6ebcb5217b50ce0135844e7915d20219be90)
+- **Commit message:** `v0.16 add arm kinematics and JSON command interface`
+- **Date:** 2026-11-20 (KST)
+- **Validation:** ESP-IDF 6.1 build PASS (developer reported); UART communication, physical servo and motion tests not performed.
+
+### Implemented in source
+
+- **`ArmKinematics`**: manufacturer RoArm-M3 geometry-based `Inverse()` (X/Y/Z/T/R/G → joint angles) and `Forward()` (joint angles → X/Y/Z/T/R/G), with invalid and unreachable input rejection.
+- **`ArmCommandInterface`**: cJSON-based `T=102` joint targets, `T=1041` Cartesian direct targets; `T=0` clears target and requests asynchronous DISARM; feedback `T=105` routed by Application Task through joint feedback and FK.
+- **Target freshness**: `Process()` republishes retained targets every ~20 ms only while `MotorInterfaceState::ARMED`, to satisfy the MotorInterface command freshness window (100 ms).
+- **`ArmCommandTask`**: Application Task pinned to Core 1, priority 3, 20 ms loop; receives newline-delimited JSON from UART0 console stdin. Existing `ServoTask` remains on Core 0, priority 5, with UART1 ownership.
+- **Build/dependencies**: `main/CMakeLists.txt` registers the new .cpp files; `main/idf_component.yml` adds `espressif/cjson`; `dependencies.lock` records dependency resolution.
+- **Architecture**: Orange Pi 5+ is planned to own VLA/LLM, Task/Arm Controller and motion planning, while ESP32 owns Pose execution, IK/FK, joint mapping, MotorInterface, servo communication and safety control.
+
+### Constraints and pending validation
+
+- v0.16 build success **does not** establish UART0 JSON input/output, IK/FK real-arm accuracy, 7-servo feedback, torque handling or position-following performance.
+- `T=105` replies use a minimal custom subset, not the manufacturer's complete JSON response schema.
+- Nonzero `spd` / `acc` options are rejected. No trajectory interpolation, path planning or Grasp Controller on ESP32.
+- `T=0` is a non-immediate DISARM request, **not** a tested hardware E-stop.
+- Retained targets have no communication-loss expiration policy. Do not enable physical torque/PWM output until watchdog/timeout, initialization parameter checks, safe stop and motor mapping are verified.
+- `MOTOR_TORQUE_WRITE_ENABLE=0`, `MOTOR_PWM_OUTPUT_ENABLE=0`, `MOTOR_EEPROM_WRITE_ENABLE=0` remain safety defaults.
+- `test_arm_kinematics.cpp` is not part of the normal ESP-IDF build; IK/FK unit test success must be reported independently.
+- cJSON's generated `managed_components/` files were committed in v0.16; consider tracking only the manifest and lockfile in a later repository cleanup.
+
+### Next
+
+1. Verify UART0 JSON reception and responses on the actual ESP32, while UART1 servo ownership stays separate.
+2. Validate IK/FK and JointMapper consistency over the supported, physically reachable workspace.
+3. Review vendor firmware INIT, torque and operating-mode parameters against the custom PWM/PID architecture before changing EEPROM or enabling output.
+4. Validate servo direction, initial position, coupled Shoulder behavior, feedback freshness and safe-stop/command timeout.
+5. Test Pose command → IK → joint mapping → PID → servo output and feedback → FK on hardware before implementing SBC motion planning.

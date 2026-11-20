@@ -6,6 +6,8 @@ idf_component_register(
         "st3215.cpp"
         "st3215_parameter_fsm.cpp"
         "joint_mapper.cpp"
+        "arm_kinematics.cpp"
+        "arm_command_interface.cpp"
 
     INCLUDE_DIRS "."
 
@@ -21,4 +23,5 @@ idf_component_register(
         esp_adc
         esp_timer
         freertos
+
 )

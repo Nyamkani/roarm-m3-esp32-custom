@@ -83,6 +83,68 @@ ArmCommandInterface::HandleJsonCommand(const char* json) {
             break;
         }
 
+// T=210: Servo Torque / ARM-DISARM control
+if (t == 210.0)
+{
+    double cmd = 0.0;
+
+    if (!ReadFinite(root, "cmd", cmd) ||
+        (cmd != 0.0 && cmd != 1.0))
+    {
+        result = CommandResult::INVALID_TARGET;
+        break;
+    }
+
+    // DISARM: always allow a stop request.
+    if (cmd == 0.0)
+    {
+        RequestStop();
+        result = CommandResult::ACCEPTED;
+        break;
+    }
+
+    // ARM: disabled until physical safety validation.
+    #if MOTOR_TORQUE_WRITE_ENABLE == 0
+        result = CommandResult::MOTOR_UNAVAILABLE;
+        break;
+    #else
+        if (motor_.GetState() != MotorInterfaceState::DISARMED ||
+            !has_target_)
+        {
+            result = CommandResult::MOTOR_UNAVAILABLE;
+            break;
+        }
+
+        const int64_t now_us = esp_timer_get_time();
+
+        // Reject missing or expired upper-level command.
+        if (last_command_us_ <= 0 ||
+            now_us - last_command_us_ >= kCommandTimeoutUs)
+        {
+            RequestStop();
+            result = CommandResult::MOTOR_UNAVAILABLE;
+            break;
+        }
+
+        // Ensure the current command is available before ARM request.
+        if (!motor_.SetJointTargets(target_joints_))
+        {
+            result = CommandResult::INVALID_TARGET;
+            break;
+        }
+
+        last_publish_us_ = now_us;
+
+        motor_.RequestServoOn();
+
+        // Request accepted, not confirmation of physical ARM.
+        result = CommandResult::ACCEPTED;
+        break;
+    #endif
+    }
+
+
+
         if (t != 102.0 && t != 1041.0) {
             result = CommandResult::UNSUPPORTED_COMMAND;
             break;
@@ -131,7 +193,9 @@ ArmCommandInterface::HandleJsonCommand(const char* json) {
         // Commit only after the complete command passes validation.
         target_joints_ = candidate;
         has_target_ = true;
-        last_publish_us_ = 0;  // Publish at next Process().
+
+        last_command_us_ = esp_timer_get_time();
+        last_publish_us_ = 0;// Publish at next Process().
         result = CommandResult::ACCEPTED;
     } while (false);
 
@@ -139,24 +203,40 @@ ArmCommandInterface::HandleJsonCommand(const char* json) {
     return result;
 }
 
-void ArmCommandInterface::Process() {
-    if (!has_target_) return;
-
-    // Safe state boundary: never publish motion targets during init,
-    // transitional states, disarm, or error. No implicit torque enable.
-    if (motor_.GetState() != MotorInterfaceState::ARMED) return;
+void ArmCommandInterface::Process()
+{
+    if (!has_target_)
+        return;
 
     const int64_t now_us = esp_timer_get_time();
-    if (last_publish_us_ != 0 &&
-        now_us - last_publish_us_ < kPublishPeriodUs) {
+
+    // Upper command freshness check
+    if (now_us - last_command_us_ >= kCommandTimeoutUs)
+    {
+        RequestStop();
         return;
     }
 
-    if (!motor_.SetJointTargets(target_joints_)) {
-        // Reject invalidated target rather than keeping republishing it.
-        has_target_ = false;
+    const MotorInterfaceState state = motor_.GetState();
+
+    if (state != MotorInterfaceState::DISARMED &&
+        state != MotorInterfaceState::ARMED)
+    {
         return;
     }
+
+    if (last_publish_us_ != 0 &&
+        now_us - last_publish_us_ < kPublishPeriodUs)
+    {
+        return;
+    }
+
+    if (!motor_.SetJointTargets(target_joints_))
+    {
+        RequestStop();
+        return;
+    }
+
     last_publish_us_ = now_us;
 }
 
@@ -188,8 +268,11 @@ bool ArmCommandInterface::BuildFeedbackJson(char* output,
     return true;
 }
 
-void ArmCommandInterface::RequestStop() {
+void ArmCommandInterface::RequestStop()
+{
     has_target_ = false;
     last_publish_us_ = 0;
-    motor_.RequestServoOff();  // Asynchronous FSM request; not a hard E-stop.
+    last_command_us_ = 0;
+
+    motor_.RequestServoOff();
 }

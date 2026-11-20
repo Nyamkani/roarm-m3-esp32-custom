@@ -38,6 +38,21 @@ const char* ResultToString(ArmCommandInterface::CommandResult result) {
     }
 }
 
+const char* MotorStateToString(MotorInterfaceState state)
+{
+    switch (state)
+    {
+        case MotorInterfaceState::INIT:       return "INIT";
+        case MotorInterfaceState::READY:      return "READY";
+        case MotorInterfaceState::DISARMED:   return "DISARMED";
+        case MotorInterfaceState::ARMING:     return "ARMING";
+        case MotorInterfaceState::ARMED:      return "ARMED";
+        case MotorInterfaceState::DISARMING:  return "DISARMING";
+        case MotorInterfaceState::ERROR:      return "ERROR";
+        default:                              return "UNKNOWN";
+    }
+}
+
 void HandleJsonLine(const char* json) {
     // Feedback request is a receive-side operation. Do not send it through
     // HandleJsonCommand(), which handles motion and stop commands only.
@@ -48,6 +63,38 @@ void HandleJsonLine(const char* json) {
     }
 
     const cJSON* type = cJSON_GetObjectItemCaseSensitive(root, "T");
+
+
+    // T=211: Custom diagnostic status request
+    if (cJSON_IsObject(root) &&
+        cJSON_IsNumber(type) &&
+        type->valuedouble == 211.0)
+    {
+        cJSON_Delete(root);
+
+        const MotorInterfaceState state =
+            motor_interface.GetState();
+
+        JointAngles feedback{};
+        const bool feedback_valid =
+            motor_interface.GetJointFeedback(feedback);
+
+        std::printf(
+            "{\"T\":211,"
+            "\"state\":\"%s\","
+            "\"feedback_valid\":%s,"
+            "\"torque_write_enabled\":%s,"
+            "\"pwm_output_enabled\":%s}\n",
+            MotorStateToString(state),
+            feedback_valid ? "true" : "false",
+            MOTOR_TORQUE_WRITE_ENABLE ? "true" : "false",
+            MOTOR_PWM_OUTPUT_ENABLE ? "true" : "false"
+        );
+
+        return;
+    }
+
+
     const bool feedback_requested =
         cJSON_IsObject(root) && cJSON_IsNumber(type) &&
         type->valuedouble == 105.0;

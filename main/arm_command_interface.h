@@ -55,7 +55,10 @@ private:
 
     JointAngles target_joints_{};
     bool has_target_ = false;
-    int64_t last_publish_us_ = 0;
 
-    static constexpr int64_t kPublishPeriodUs = 20000; // 50 Hz
+    int64_t last_publish_us_ = 0;
+    int64_t last_command_us_ = 0;  // 추가
+
+    static constexpr int64_t kPublishPeriodUs = 20000;
+    static constexpr int64_t kCommandTimeoutUs = 1000000; // 1s
 };

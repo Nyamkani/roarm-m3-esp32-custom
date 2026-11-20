@@ -37,9 +37,11 @@ Waveshare **RoArm-M3**의 ESP32 제어 보드에서 동작하는 독립적인 **
                  │  목표 동작 / 관절 또는 동작 명령
                  ▼
 Orange Pi 5+ / KCF 기반 애플리케이션 (계획)
-                 │  통신 및 명령 인터페이스
+  - 주행·로봇팔 Controller, Pre-Grasp/Grasp, Motion Planning
+                 │  X/Y/Z/T/R/G 목표 Pose · 명령 / 피드백
                  ▼
 RoArm-M3 ESP32 Custom Firmware
+  - UART0 JSON · ArmKinematics IK/FK · JointMapper
   - 7개 서보 피드백 수집 / Snapshot
   - 외부 PID 연산 경로 (구현, 물리 동작 미검증)
   - 다축 출력 / 오류 처리 / 안전 제한 (개발 중)
@@ -54,39 +56,89 @@ RoArm-M3 ESP32 Custom Firmware
 - **상위 AI:** 향후 카메라·센서 정보를 활용해 물체 인식, 집기·놓기 등의 동작을 판단하고 구체적인 행동 명령을 생성하도록 계획합니다.
 - **ESP32 펌웨어:** 상위 명령을 직접 검증·실행할 수 있는 하위 관절/모터 제어, 상태 피드백 및 오류 대응을 담당합니다. 안전 제한을 AI 판단에만 맡기지 않는 구조를 지향합니다.
 
-현재 버전에는 AI 모델이나 상위 AI 연동 기능이 포함되어 있지 않습니다. ROS/ROS 2는 사용하지 않는 방향으로 설계 중입니다.
+현재 버전에는 AI 모델이나 상위 SBC Controller 연동 기능이 포함되어 있지 않습니다. ESP32는 X/Y/Z/T/R/G 목표 Pose의 IK/FK 및 저수준 모터 제어를 담당하고, 향후 Orange Pi 5+는 VLA/LLM, 이동·파지 계획, 주행·팔 Controller를 담당하는 구조를 목표로 합니다. ROS/ROS 2는 사용하지 않습니다.
 
 ## Architecture
 
-```text
-app_main / Board initialization
-          │
-          ▼
-MotorInterface (FreeRTOS task + communication FSM)
-  ├─ UART TX/RX + response timeout / RX recovery
-  ├─ Seven-servo sequential READ
-  ├─ INIT: sequential mode verification / optional parameter transaction
-  ├─ MotorFeedbackFrame / TripleSnapshot
-  ├─ Communication error counter / ERROR state
-  ├─ PIDController2 × 7 (zero gains by default; command/feedback freshness)
-  ├─ ChangeState / EnterState / ExitState (interface and comm FSM)
-  ├─ READY: READ-only torque OFF verification for all seven servos
-  ├─ DISARMED/ARMING/ARMED/DISARMING within MotorInterfaceState
-  └─ Performance logging (optional)
-          │
-          ▼
-ST3215 (packet serializer / response parser / feedback decoder)
-          │
-          ▼
-7× ST3215 serial servos
+### Class relationships (v0.16)
+
+```mermaid
+flowchart TD
+    APP["app_main() / BoardInitAll()"] --> ACT["ArmCommandTask · Core 1"]
+    APP --> MI["MotorInterface::Initialize()"]
+    ACT --> ACI["ArmCommandInterface"]
+    ACI --> AK["ArmKinematics · Inverse() / Forward()"]
+    ACI --> MI
+    MI --> JM["JointMapper · 6 joints ↔ 7 servos"]
+    MI --> PID["PIDController2 × 7"]
+    MI --> PFSM["ST3215ParameterFSM"]
+    MI --> SERVO["ST3215 × 7 · packet / feedback"]
+    MI --> SNAP["TripleSnapshot · commands / feedback"]
+    SERVO --> HW["Physical ST3215 servos × 7"]
 ```
+
+`ArmKinematics`와 `MotorInterface`는 상하 종속 관계가 아니라, 상위 `ArmCommandInterface`가 각각 호출하는 독립 모듈입니다. `JointMapper`는 `MotorInterface`에서 사용하는 정적 API이며, `PIDController2`와 `ST3215` 인스턴스는 각각 7개입니다. `ST3215ParameterFSM`은 초기 파라미터 검증 및 선택적 변경을 담당합니다.
+
+### Command and feedback flow (v0.16)
+
+```mermaid
+flowchart TD
+    A["UART0 / JSON 수신"] --> B["ArmCommandTask · Core 1"]
+    B --> C["ArmCommandInterface"]
+    C --> D["ArmKinematics · IK/FK"]
+    C --> E["MotorInterface::SetJointTargets()"]
+    E --> F["command_snapshot_"]
+    F --> G["ServoTask · Core 0"]
+    G --> H["PID / UART1 / ST3215 × 7"]
+    H --> I["feedback_snapshot_"]
+    I --> C
+```
+
+**명령별 분기:** `T=1041`은 `ArmKinematics::Inverse()`로 Cartesian 목표를 관절각으로 바꾼 뒤 목표를 저장합니다. `T=102`는 직접 관절각을 검증해 저장합니다. `ArmCommandInterface::Process()`가 ARMED 상태에서 주기적으로 `SetJointTargets()`를 호출합니다. `T=105` 피드백 요청은 `MotorInterface::GetJointFeedback()`과 `ArmKinematics::Forward()`를 거쳐 JSON을 반환합니다. `T=0`은 목표 해제와 비동기 DISARM 요청이며, 하드웨어 비상 정지를 보장하지 않습니다.
+
+두 Task는 함수 호출 체인 하나로 동작하는 것이 아니라, `command_snapshot_` / `feedback_snapshot_`을 통해 서로 다른 실행 문맥에서 데이터를 교환합니다.
+
+### Communication and execution
+
+| Context | Role | Configuration |
+| --- | --- | --- |
+| ArmCommandTask | UART0 console JSON input, target refresh, feedback request | Core 1, priority 3, 20 ms loop |
+| ServoTask | Servo communication FSM, PID, UART1 | Core 0, priority 5, 1 ms task loop |
+| Host JSON | One JSON object per line via configured UART0 console | GPIO1/3, 115200 baud (configuration-dependent) |
+| Servo bus | Seven servos, sequential READ and conditional SYNC_WRITE | UART1 GPIO19/18, 1 Mbps |
+
+현재 UART0 표준 입력은 ESP-IDF 기본 비블로킹 콘솔 VFS 설정을 전제로 합니다. 실제 JSON 송수신은 아직 보드에서 검증되지 않았으며, 진단 로그와 JSON 응답이 같은 콘솔에 섞일 수 있습니다. 이동 보간 및 속도·가속도 제어는 미구현입니다.
+
+### Supported JSON commands (software implementation)
+
+```json
+{"T":102,"base":0,"shoulder":0,"elbow":1.57,"wrist":0,"roll":0,"hand":3.14}
+```
+
+```json
+{"T":1041,"x":235,"y":0,"z":234,"t":0,"r":0,"g":3.14}
+```
+
+```json
+{"T":105}
+```
+
+```json
+{"T":0}
+```
+
+`T=102` (관절각), `T=1041` (목표 Pose), `T=105` (FK 기반 피드백), `T=0` (비동기 DISARM 요청)을 처리합니다. 속도/가속도 옵션 `spd`, `acc`의 0이 아닌 값은 지원하지 않습니다. `T=105` 응답은 제조사 전체 포맷이 아닌 최소 커스텀 JSON입니다. JSON 명령을 한 번 수신한 목표는 내부에서 반복 발행하며, **명령 만료 및 통신 두절 안전 정책은 아직 미구현**입니다.
 
 ## Development Status
 
-**v0.14 — unified Servo ARM/DISARM FSM (hardware test pending)**
+**v0.16 — IK/FK, JSON command interface and Application Task (build PASS; hardware test pending)**
 
 | Area | Status |
 | --- | --- |
+| JointMapper (6 관절 ↔ 7 서보) | v0.15 소스 구현, 빌드 PASS |
+| ArmKinematics IK/FK | v0.16 구현, 빌드 PASS; 전체 작업 공간 실기 검증 전 |
+| ArmCommandInterface 및 JSON 명령 | v0.16 구현, 빌드 PASS; 실제 UART 송수신 미검증 |
+| ArmCommandTask · Core 1 | v0.16 연결, 빌드 PASS; 실제 Task 실행 미검증 |
 | ESP-IDF 프로젝트, UART 보드 초기화, ServoTask 시작 | 소스 구현 |
 | ST3215 패킷 생성·응답 파싱 및 7개 서보 피드백 수집 | 소스 구현 |
 | 7개 ID (11~17) 순차 INIT 모드 검증 후 READY | 소스 구현 |
@@ -96,8 +148,8 @@ ST3215 (packet serializer / response parser / feedback decoder)
 | Command Snapshot → 7개 서보 SYNC_WRITE | 코드 경로 구현, PWM 출력 비활성화 |
 | 외부 PID 계산 (PIDController2 × 7) | 구현, 게인 0 기본값 / 물리 출력 비활성화 |
 | ChangeState/EnterState/ExitState (interface / comm) | 구현, 전환 시에만 훅 실행 |
-| HOME/IDLE, 하드웨어 긴급 정지 | 미구현 |
-| 실제 ESP-IDF 빌드 / 실물 서보 검증 | 이번 수정 기준 미검증 |
+| HOME/IDLE, 하드웨어 긴급 정지 | 미구현 (T=0은 DISARM 요청만 수행) |
+| ESP-IDF v6.1 빌드 / 실물 서보 검증 | v0.16 빌드 PASS (개발자 확인) / 실물 미검증 |
 
 기본값에서는 현재 모드가 목표 PWM_OPEN과 다르면 INIT이 실패하며, **EEPROM을 자동 변경하지 않습니다.** 토크 활성화 및 PWM 출력도 자동 실행하지 않습니다. 실물 구동 전에는 토크 해제 시 중력 낙하 위험, 직접 PWM 제어 적합성, 통신·정지 안전 조건을 별도로 확인해야 합니다.
 
@@ -105,14 +157,19 @@ ST3215 (packet serializer / response parser / feedback decoder)
 
 ```text
 main/
-├── main.cpp               # app_main / board initialization
-├── gpio_config.*          # board UART initialization
-├── pins.h                 # board pin configuration
-├── motor_interface.*      # seven-servo init / communication FSM, PID integration
-├── pid.h                  # reusable PIDController2 (from kssdrone v1.3)
-├── st3215.*               # ST3215 packet protocol and motor data
-├── st3215_parameter_fsm.* # parameter READ / WRITE / verify / EEPROM lock
-└── shared_snapshot.h      # shared / triple snapshot utilities
+├── main.cpp                # app_main, ArmCommandTask and UART0 JSON dispatch
+├── arm_command_interface.* # JSON parse, IK/FK calls, target refresh, feedback
+├── arm_kinematics.*        # Cartesian Pose ↔ JointAngles
+├── joint_mapper.*          # JointAngles[6] ↔ ServoPositions[7]
+├── motor_interface.*       # seven-servo FSM, ServoTask, snapshots, PID
+├── pid.h                   # PIDController2
+├── st3215.*                # servo serial protocol and feedback
+├── st3215_parameter_fsm.*  # mode, torque and parameter transactions
+├── gpio_config.*           # UART board initialization
+├── pins.h                  # board UART/GPIO definitions
+├── shared_snapshot.h       # triple snapshot utilities
+├── test_arm_kinematics.cpp # test source, excluded from firmware build
+└── idf_component.yml       # espressif/cjson dependency
 ```
 
 ## Build
@@ -124,7 +181,7 @@ idf.py set-target esp32
 idf.py build
 ```
 
-빌드·플래시·실물 동작 여부는 환경 및 연결된 보드에서 별도로 검증해야 합니다.
+v0.16은 개발자 환경의 ESP-IDF v6.1에서 빌드 PASS로 보고되었습니다. 플래시, JSON 실통신, IK/FK 실기 정확성 및 실제 모터 동작은 별도로 검증해야 합니다.
 
 개발 내역과 이후 변경 계획은 [update.md](update.md)를 참고하세요.
 

@@ -113,6 +113,10 @@ enum class MotorInitState : uint8_t
     START,
     SET_MODE,
     WAIT_MODE,
+
+    SET_TORQUE_DIAG,
+    WAIT_TORQUE_DIAG,
+
     SET_TORQUE_LIMIT,
     WAIT_TORQUE_LIMIT,
     NEXT_MOTOR,
@@ -169,6 +173,8 @@ private:
     MotorInitState init_state_ = MotorInitState::START;
 
     size_t init_motor_index_ = 0;
+
+    uint8_t init_mismatch_count_ = 0;
 
     void ProcessMotorInitialization();
 

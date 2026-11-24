@@ -363,6 +363,7 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             output_inhibit_ = true;
             command_valid_ = false;
             control_valid_ = false;
+            init_mismatch_count_ = 0;
             ResetPID();
             break;
         case MotorInterfaceState::READY:
@@ -460,13 +461,33 @@ void MotorInterface::ProcessInterfaceFSM()
 void MotorInterface::StateInit()
 {
     ProcessMotorInitialization();
-    if (state_ == MotorInterfaceState::INIT &&
-        init_state_ == MotorInitState::COMPLETE)
+
+    if (state_ != MotorInterfaceState::INIT ||
+        init_state_ != MotorInitState::COMPLETE)
     {
-        ChangeCommState(MotorCommState::IDLE);
-        current_motor_index_ = 0;
-        ChangeState(MotorInterfaceState::READY);
+        return;
     }
+
+    ESP_LOGI(
+        TAG,
+        "INIT diagnosis complete: mismatches=%u",
+        static_cast<unsigned>(init_mismatch_count_)
+    );
+
+    if (init_mismatch_count_ != 0)
+    {
+        ESP_LOGW(
+            TAG,
+            "INIT rejected: servo configuration mismatch"
+        );
+
+        EnterError();
+        return;
+    }
+
+    ChangeCommState(MotorCommState::IDLE);
+    current_motor_index_ = 0;
+    ChangeState(MotorInterfaceState::READY);
 }
 
 bool MotorInterface::PollTorque(bool enabled, bool verify_only)
@@ -1071,6 +1092,17 @@ void MotorInterface::EnterError()
     if (state_ == MotorInterfaceState::ERROR)
         return;
 
+    ESP_LOGE(
+        TAG,
+        "ENTER ERROR: motor_state=%u init_state=%u "
+        "servo_index=%u param_result=%u param_error=%s",
+        static_cast<unsigned>(state_),
+        static_cast<unsigned>(init_state_),
+        static_cast<unsigned>(init_motor_index_),
+        static_cast<unsigned>(parameter_fsm_.GetResult()),
+        esp_err_to_name(parameter_fsm_.GetError())
+    );
+        
     // PID reset is handled once by EnterState(ERROR).
 
 #if MOTOR_PERF_LOG_ENABLE
@@ -1221,20 +1253,97 @@ void MotorInterface::ProcessMotorInitialization()
         case MotorInitState::WAIT_MODE:
         {
             const auto result = parameter_fsm_.Poll();
+
+            if (result == ST3215ParameterFSM::Result::SUCCESS)
+            {
+                init_state_ = MotorInitState::SET_TORQUE_DIAG;
+            }
+            else if (result == ST3215ParameterFSM::Result::FAILED)
+            {
+                if (parameter_fsm_.HasValueMismatch())
+                {
+                    ++init_mismatch_count_;
+
+                    ESP_LOGI(
+                        TAG,
+                        "INIT mode mismatch accepted for diagnosis: id=%u",
+                        static_cast<unsigned>(parameter_fsm_.GetServoID())
+                    );
+
+                    init_state_ = MotorInitState::SET_TORQUE_DIAG;
+                }
+                else
+                {
+                    ESP_LOGE(
+                        TAG,
+                        "INIT mode communication failure: id=%u err=%s",
+                        static_cast<unsigned>(parameter_fsm_.GetServoID()),
+                        esp_err_to_name(parameter_fsm_.GetError())
+                    );
+
+                    init_state_ = MotorInitState::ERROR;
+                    EnterError();
+                }
+            }
+            break;
+        }
+
+        case MotorInitState::SET_TORQUE_DIAG:
+        {
+            const uint8_t id =
+                motors_[init_motor_index_].GetID();
+
+            const esp_err_t err =
+                parameter_fsm_.VerifyTorqueEnable(id, false);
+
+            if (err != ESP_OK)
+            {
+                ESP_LOGE(
+                    TAG,
+                    "INIT torque read request failed: id=%u",
+                    static_cast<unsigned>(id)
+                );
+
+                init_state_ = MotorInitState::ERROR;
+                EnterError();
+                return;
+            }
+
+            init_state_ = MotorInitState::WAIT_TORQUE_DIAG;
+            break;
+        }
+
+        case MotorInitState::WAIT_TORQUE_DIAG:
+        {
+            const auto result = parameter_fsm_.Poll();
+
             if (result == ST3215ParameterFSM::Result::SUCCESS)
             {
                 init_state_ = MotorInitState::SET_TORQUE_LIMIT;
             }
             else if (result == ST3215ParameterFSM::Result::FAILED)
             {
-                ESP_LOGE(TAG, "INIT mode verification failed: servo=%u err=%s",
-                         static_cast<unsigned>(parameter_fsm_.GetServoID()),
-                         esp_err_to_name(parameter_fsm_.GetError()));
-                init_state_ = MotorInitState::ERROR;
-                EnterError();
+                if (parameter_fsm_.HasValueMismatch())
+                {
+                    ++init_mismatch_count_;
+                    init_state_ = MotorInitState::SET_TORQUE_LIMIT;
+                }
+                else
+                {
+                    ESP_LOGE(
+                        TAG,
+                        "INIT torque communication failure: id=%u err=%s",
+                        static_cast<unsigned>(parameter_fsm_.GetServoID()),
+                        esp_err_to_name(parameter_fsm_.GetError())
+                    );
+
+                    init_state_ = MotorInitState::ERROR;
+                    EnterError();
+                }
             }
             break;
         }
+
 
         case MotorInitState::SET_TORQUE_LIMIT:
         {

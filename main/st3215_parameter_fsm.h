@@ -42,6 +42,7 @@ public:
     Result GetResult() const { return result_; }
     esp_err_t GetError() const { return error_; }
     uint8_t GetServoID() const { return id_; }
+    bool HasValueMismatch() const { return value_mismatch_; }
 
 private:
     enum class Step : uint8_t {
@@ -82,4 +83,5 @@ private:
     size_t expected_rx_size_ = 0;
     uint8_t expected_params_ = 0;
     static constexpr int64_t RESPONSE_TIMEOUT_US = 3000;
+    bool value_mismatch_ = false;
 };

@@ -5,5 +5,7 @@
       "--background-index",
       "--query-driver=**",
       "--compile-commands-dir=/home/kssvm/workspace/esp/workspace/roarm-m3-esp32-custom/build"
-    ]
+    ],
+    "idf.flashType": "UART",
+    "idf.port": "/dev/ttyUSB0"
 }

@@ -1,6 +1,10 @@
 #include "st3215_parameter_fsm.h"
 #include <cstring>
 
+#include "esp_log.h"
+
+static constexpr const char* TAG = "ST3215_INIT";
+
 namespace {
 constexpr uint8_t RETURN_LEVEL_ADDR = 8;
 constexpr uint8_t TORQUE_ENABLE_ADDR = 40;
@@ -57,6 +61,7 @@ esp_err_t ST3215ParameterFSM::Begin(uint8_t id, Register reg,
     storage_ = storage; verify_only_ = verify_only; return_level_ = 1;
     unlock_may_have_happened_ = false;
     failed_pending_relock_ = false;
+    value_mismatch_ = false;
     error_ = ESP_OK; result_ = Result::BUSY;
     Next(Step::READ_RETURN_LEVEL);
     return ESP_OK;
@@ -185,17 +190,72 @@ void ST3215ParameterFSM::CompleteStep(const ST3215Response* response)
         }
         Next(Step::READ_CURRENT); break;
     case Step::READ_CURRENT:
-        if (std::memcmp(response->params, desired_.data(), size_) == 0) {
+    {
+        const bool matched =
+            std::memcmp(response->params, desired_.data(), size_) == 0;
+
+        uint16_t actual = response->params[0];
+        uint16_t expected = desired_[0];
+
+        if (size_ == 2)
+        {
+            actual |=
+                static_cast<uint16_t>(response->params[1]) << 8;
+
+            expected |=
+                static_cast<uint16_t>(desired_[1]) << 8;
+        }
+
+        const char* reg_name = "UNKNOWN";
+
+        switch (address_)
+        {
+            case 33:
+                reg_name = "OPERATING_MODE";
+                break;
+
+            case 40:
+                reg_name = "TORQUE_ENABLE";
+                break;
+
+            case 48:
+                reg_name = "TORQUE_LIMIT";
+                break;
+
+            default:
+                break;
+        }
+
+        ESP_LOGI(
+            TAG,
+            "READ id=%u reg=%s actual=%u expected=%u %s",
+            static_cast<unsigned>(id_),
+            reg_name,
+            static_cast<unsigned>(actual),
+            static_cast<unsigned>(expected),
+            matched ? "MATCH" : "MISMATCH"
+        );
+
+        if (matched)
+        {
             result_ = Result::SUCCESS;
-        } else if (verify_only_) {
-            // Read-only policy: reject a mismatched mode, do not write.
+        }
+        else if (verify_only_)
+        {
+            value_mismatch_ = true;
             Fail(ESP_ERR_INVALID_STATE);
-        } else if (storage_ == Storage::EEPROM) {
+        }
+        else if (storage_ == Storage::EEPROM)
+        {
             Next(Step::READ_TORQUE);
-        } else {
+        }
+        else
+        {
             Next(Step::WRITE_VALUE);
         }
+
         break;
+    }
     case Step::READ_TORQUE:
         if (response->params[0] != 0) {
             Fail(ESP_ERR_INVALID_STATE);

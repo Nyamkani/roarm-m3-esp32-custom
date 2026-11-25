@@ -127,6 +127,45 @@ bool MotorInterface::PreparePositionHold(MotorCommandFrame& hold)
 #endif
 }
 
+bool MotorInterface::PreviewPositionArm(MotorCommandFrame& hold)
+{
+    // This preview neither changes command snapshots nor writes to servos.
+    if (!PreparePositionHold(hold))
+        return false;
+
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+    SharedSnapshotFrame<MotorFeedbackFrame> feedback{};
+    if (!GetFeedbackFrame(feedback) ||
+        !ValidateFeedback(feedback.data, esp_timer_get_time()))
+    {
+        hold = {};
+        return false;
+    }
+
+    // Do not preview ARM while any joint is visibly moving. This is only
+    // a conservative diagnostic gate, not the final torque-on preflight.
+    constexpr int32_t kMaxAbsSpeed = 50;
+    constexpr int32_t kMaxPositionDrift = 4;
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        const int32_t velocity = feedback.data.motors[i].velocity;
+        const int32_t position = feedback.data.motors[i].position;
+        const int32_t captured = hold.motors[i].target_position;
+        if (velocity < -kMaxAbsSpeed || velocity > kMaxAbsSpeed ||
+            position - captured < -kMaxPositionDrift ||
+            position - captured > kMaxPositionDrift)
+        {
+            hold = {};
+            return false;
+        }
+    }
+    return true;
+#else
+    hold = {};
+    return false;
+#endif
+}
+
 bool MotorInterface::GetJointFeedback(
     JointAngles& actual)
 {

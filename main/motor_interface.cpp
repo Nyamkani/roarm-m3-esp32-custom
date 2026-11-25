@@ -590,27 +590,33 @@ void MotorInterface::StateInit()
         static_cast<unsigned>(init_mismatch_count_)
     );
 
+    ESP_LOGI(TAG, "INIT torque ON count=%u",
+             static_cast<unsigned>(init_torque_on_count_));
+
+    // Prioritize detection of retained torque over operating-mode mismatch.
+    // Never force EEPROM writes or falsely label the arm DISARMED.
+    if (init_torque_on_count_ != 0)
+    {
+        boot_recheck_mode_after_off_ = true;
+        ESP_LOGW(TAG,
+                 "BOOT_RECOVERY: torque ON=%u/7, mode mismatches=%u; "
+                 "support arm, then use T=215 cmd=0",
+                 static_cast<unsigned>(init_torque_on_count_),
+                 static_cast<unsigned>(init_mismatch_count_));
+        ChangeCommState(MotorCommState::IDLE);
+        current_motor_index_ = 0;
+        ChangeState(MotorInterfaceState::BOOT_RECOVERY);
+        return;
+    }
     if (init_mismatch_count_ != 0)
     {
-        ESP_LOGW(
-            TAG,
-            "INIT rejected: servo configuration mismatch"
-        );
-
+        ESP_LOGW(TAG, "INIT rejected: operating mode mismatch with torque OFF");
         EnterError();
         return;
     }
 
     ChangeCommState(MotorCommState::IDLE);
     current_motor_index_ = 0;
-    if (init_torque_on_count_ != 0)
-    {
-        ESP_LOGW(TAG, "BOOT_RECOVERY: %u/7 servos report torque ON; "
-                      "support arm, then send T=215 cmd=0 for explicit OFF",
-                 static_cast<unsigned>(init_torque_on_count_));
-        ChangeState(MotorInterfaceState::BOOT_RECOVERY);
-        return;
-    }
     ChangeState(MotorInterfaceState::READY);
 }
 
@@ -1069,6 +1075,13 @@ void MotorInterface::StateDisarming()
     {
         torque_off_verified_ = true;
         torque_off_public_.store(true);
+        if (boot_recheck_mode_after_off_)
+        {
+            boot_recheck_mode_after_off_ = false;
+            ESP_LOGI(TAG, "BOOT_RECOVERY: torque OFF verified; rechecking operating modes");
+            ChangeState(MotorInterfaceState::INIT);
+            return;
+        }
         ChangeState(MotorInterfaceState::DISARMED);
     }
 #else

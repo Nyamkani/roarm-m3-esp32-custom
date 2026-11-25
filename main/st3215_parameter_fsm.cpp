@@ -47,11 +47,16 @@ esp_err_t ST3215ParameterFSM::Begin(uint8_t id, Register reg,
     const auto a = static_cast<uint8_t>(reg);
     const bool valid = (a == 33 && size == 1 && storage == Storage::EEPROM) ||
                        (a == 40 && size == 1 && storage == Storage::RAM) ||
+                       (a == 42 && size == 2 && storage == Storage::RAM) ||
+                       (a == 56 && size == 2 && storage == Storage::RAM && verify_only) ||
                        (a == 48 && size == 2 && storage == Storage::RAM);
     // ID, baud and zero-offset are excluded from normal runtime settings.
     if (!valid) return ESP_ERR_NOT_SUPPORTED;
     if (a == 33 && data[0] > 3) return ESP_ERR_INVALID_ARG;
     if (a == 40 && data[0] > 1) return ESP_ERR_INVALID_ARG;
+    if ((a == 42 || a == 56) &&
+        (static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8)) > 4095)
+        return ESP_ERR_INVALID_ARG;
     if (a == 48 && (static_cast<uint16_t>(data[0]) |
                     (static_cast<uint16_t>(data[1]) << 8)) > 1000)
         return ESP_ERR_INVALID_ARG;
@@ -96,6 +101,24 @@ esp_err_t ST3215ParameterFSM::SetTorqueLimit(uint8_t id, uint16_t limit)
     return Begin(id, Register::TORQUE_LIMIT, value, 2, Storage::RAM);
 }
 
+esp_err_t ST3215ParameterFSM::SetGoalPosition(uint8_t id, uint16_t p)
+{
+    if (p > 4095) return ESP_ERR_INVALID_ARG;
+    const uint8_t d[2] = {static_cast<uint8_t>(p),static_cast<uint8_t>(p >> 8)};
+    return Begin(id,static_cast<Register>(42),d,2,Storage::RAM);
+}
+esp_err_t ST3215ParameterFSM::VerifyGoalPosition(uint8_t id, uint16_t p)
+{
+    if (p > 4095) return ESP_ERR_INVALID_ARG;
+    const uint8_t d[2] = {static_cast<uint8_t>(p),static_cast<uint8_t>(p >> 8)};
+    return Begin(id,static_cast<Register>(42),d,2,Storage::RAM,true);
+}
+esp_err_t ST3215ParameterFSM::VerifyPresentPosition(uint8_t id, uint16_t p)
+{
+    if (p > 4095) return ESP_ERR_INVALID_ARG;
+    const uint8_t d[2] = {static_cast<uint8_t>(p),static_cast<uint8_t>(p >> 8)};
+    return Begin(id,static_cast<Register>(56),d,2,Storage::RAM,true);
+}
 void ST3215ParameterFSM::Next(Step step)
 {
     step_ = step; io_ = IO::NOT_SENT;
@@ -191,7 +214,7 @@ void ST3215ParameterFSM::CompleteStep(const ST3215Response* response)
         Next(Step::READ_CURRENT); break;
     case Step::READ_CURRENT:
     {
-        const bool matched =
+        bool matched =
             std::memcmp(response->params, desired_.data(), size_) == 0;
 
         uint16_t actual = response->params[0];
@@ -206,6 +229,11 @@ void ST3215ParameterFSM::CompleteStep(const ST3215Response* response)
                 static_cast<uint16_t>(desired_[1]) << 8;
         }
 
+        if (address_ == 56 && verify_only_)
+        {
+            const int32_t d = static_cast<int32_t>(actual)-static_cast<int32_t>(expected);
+            matched = d >= -8 && d <= 8;
+        }
         const char* reg_name = "UNKNOWN";
 
         switch (address_)
@@ -217,6 +245,8 @@ void ST3215ParameterFSM::CompleteStep(const ST3215Response* response)
             case 40:
                 reg_name = "TORQUE_ENABLE";
                 break;
+            case 42: reg_name = "GOAL_POSITION"; break;
+            case 56: reg_name = "PRESENT_POSITION"; break;
 
             case 48:
                 reg_name = "TORQUE_LIMIT";

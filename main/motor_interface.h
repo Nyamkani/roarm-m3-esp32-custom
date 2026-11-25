@@ -53,7 +53,7 @@
 #define MOTOR_PHYSICAL_SERVO_ENABLE 1 // SUPERVISED BENCH: explicit physical enable
 // The factory-style parking procedure temporarily releases shoulder ID13.
 // This requires separate supervised mechanical validation before use.
-#define MOTOR_VENDOR_SHOULDER_PARK_ENABLE 1 // SUPERVISED BENCH: shoulder release
+#define MOTOR_VENDOR_SHOULDER_PARK_ENABLE 0 // temporarily locked after ID12/13 mismatch during real park
 
 #if MOTOR_CONTROL_MODE != MOTOR_CONTROL_PWM && \
     MOTOR_CONTROL_MODE != MOTOR_CONTROL_POSITION

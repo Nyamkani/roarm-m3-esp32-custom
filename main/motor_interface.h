@@ -290,6 +290,7 @@ private:
     ArmPhase arm_phase_ = ArmPhase::WRITE_HOLD;
     size_t arm_index_ = 0;
     bool arm_busy_ = false;
+    bool arm_stop_pending_ = false;
     MotorCommandFrame hold_command_{};
     enum class ParkPhase : uint8_t { RELEASE_SHOULDER, MOVE, RESTORE_SHOULDER };
     ParkPhase park_phase_ = ParkPhase::RELEASE_SHOULDER;

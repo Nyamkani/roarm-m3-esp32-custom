@@ -194,3 +194,29 @@ v0.16은 개발자 환경의 ESP-IDF v6.1에서 빌드 PASS로 보고되었습�
 - `RequestServoOn()`, `RequestServoOff()` use atomic requests; ARM preconditions include current valid command/feedback. No automatic ARM at boot.
 - **Safety defaults:** `MOTOR_TORQUE_WRITE_ENABLE=0`, `MOTOR_PWM_OUTPUT_ENABLE=0`, `MOTOR_EEPROM_WRITE_ENABLE=0`. ARM requests are rejected until hardware safety is validated.
 - Partial torque activation may persist on ERROR; a physically tested safe-stop/rollback and gravity-safe support remain required before enabling torque writes.
+
+
+## POSITION ARM dry-run safety check
+
+In the current **POSITION** build, the physical torque and position output
+compile guards remain disabled. Nothing in these diagnostic commands enables
+a motor. Keep `MOTOR_TORQUE_WRITE_ENABLE=0` and
+`MOTOR_POSITION_OUTPUT_ENABLE=0`.
+
+- `{"T":211}`: display DISARMED state, feedback validity and output gates
+- `{"T":212}`: read current seven encoder positions (hold candidate)
+- `{"T":213}`: read-only ARM preview. Requires DISARMED, fresh feedback,
+  position range 0–4095 and absolute reported servo velocity <= 50.
+  Returns `dry_run:true` and prospective hold encoder positions, never
+  publishes an output command or turns on torque.
+
+`T=213` does **not** prove that physical ARM is safe: the servo may move
+between the snapshot and torque enable; the manufacturer-specific
+position/time/speed/acceleration format, safe first write, command handoff,
+gravity support, partial torque-on rollback and motion limits are still
+unverified. The compile-time guard intentionally prevents enabling physical
+POSITION torque or output until these are designed and tested.
+
+Previously observed sequential seven-servo feedback takes about 7.1 ms;
+the 5 ms transmit-cycle budget is insufficient for physical output and
+must be independently validated before enabling motion.

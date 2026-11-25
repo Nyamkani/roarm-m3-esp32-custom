@@ -356,3 +356,63 @@ diagnostics. This is a code-path/regression check, **not** a physical
 Servo ON/OFF test. Do not flip hardware output gates or attempt
 unsupervised servo activation without a mechanical support, load-limit,
 firmware and emergency power-stop test plan.
+
+
+## Supervised physical Servo ON / manufacturer Park OFF bench (2026-11-26)
+
+The current `main` branch is now a **physical-actuation supervised bench build**,
+**not** a passive read-only diagnostic build. The following settings were
+explicitly switched to 1 in `main/motor_interface.h`:
+
+```cpp
+#define MOTOR_TORQUE_WRITE_ENABLE 1
+#define MOTOR_POSITION_OUTPUT_ENABLE 1
+#define MOTOR_PHYSICAL_SERVO_ENABLE 1
+#define MOTOR_VENDOR_SHOULDER_PARK_ENABLE 1
+```
+
+`MOTOR_PWM_OUTPUT_ENABLE=0`, `MOTOR_EEPROM_WRITE_ENABLE=0`, and
+`MOTOR_INIT_TORQUE_LIMIT_ENABLE=0` remain OFF. T102/T1041 remain
+rejected in POSITION-only validation mode. These macros can be reset to 0
+to restore the previous passive diagnostic build.
+
+**Do not flash with servos powered unless the arm is physically supported,
+the real power-disconnect switch is within immediate reach, the joint
+trajectory is free of obstructions, and the operator is positioned clear
+of pinch points. A software STOP does not guarantee motor power removal.**
+
+1. After boot, expect `T=211`: `state=DISARMED`,
+   `torque_off_verified=true`, and all four physical/park feature
+   flags true. This only verifies the initial torque-off registers.
+2. Send `{"T":212}`, `{"T":213}`, `{"T":214}` while disarmed to
+   inspect the **current encoder pose** and vendor park delta.
+3. Send `{"T":210,"cmd":1}`. While all 7 motor goals are loaded
+   from the current pose under torque OFF, the FSM verifies write
+   readbacks and the present position before turning on torque.
+   Poll `T=211` until `state=ARMED`. If the arm jerks, loses support,
+   reports ERROR, or behaves unexpectedly, cut power at the switch.
+4. Send `{"T":210,"cmd":0}` only with a clear and supported
+   parking trajectory. The vendor-order park sequencer temporarily
+   releases shoulder-driven motor ID13, moves base and driving shoulder,
+   then wrist, roll, elbow, and gripper. It increments cumulative
+   goals at most 3 encoder counts per 10ms, bounds tracking error,
+   verifies shoulder coupling, and confirms target stability before
+   reloading ID13's **current** target and restoring its torque.
+   It then reads back and verifies torque-OFF for all seven motors.
+   The 15-second timeout enters ERROR; it does not force a blind
+   torque release or claim safety.
+5. Check `T=211` again: only `state=DISARMED` with
+   `torque_off_verified=true` confirms all seven torque-disable
+   registers verified. The motors can then be moved by hand if their
+   mechanical design and load permit; encoder feedback should continue.
+6. `{"T":215,"cmd":0}` is the optional **no-park torque-release**
+   test/abort command and is **not** the intended normal OFF sequence.
+   Uncontrolled gravity motion can occur. `{"T":0}` is likewise a
+   software stop, not an independent hardware emergency stop.
+
+**Limits:** Physical actuation has not yet been built or tested on
+hardware in this change. The servo's stored acceleration/speed settings
+and individual mechanical travel limits are not calibrated by this
+firmware; incremental goal updates cannot guarantee an upper bound on
+actual joint speed or force. On ERROR or UART failure, physical torque
+may still be ON. Never assume `state=ERROR` equals motors-safe.

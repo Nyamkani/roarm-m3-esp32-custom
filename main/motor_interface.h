@@ -294,12 +294,14 @@ private:
     int64_t arm_start_us_ = 0;
     static constexpr int64_t ARM_TIMEOUT_US = 5000000;
     MotorCommandFrame hold_command_{};
-    enum class ParkPhase : uint8_t { RELEASE_SHOULDER, MOVE, RESTORE_SHOULDER };
+    enum class ParkPhase : uint8_t { RELEASE_SHOULDER, MOVE, SET_SHOULDER_GOAL, RESTORE_SHOULDER };
     ParkPhase park_phase_ = ParkPhase::RELEASE_SHOULDER;
     bool park_busy_ = false;
     bool park_stop_pending_ = false;
     MotorCommandFrame park_command_{};
     bool park_command_initialized_ = false;
+    bool park_goal_busy_ = false;
+    uint16_t park_shoulder_hold_count_ = 0;
     int64_t park_last_goal_us_ = 0;
     static constexpr int64_t PARK_GOAL_PERIOD_US = 10000;
     static constexpr int32_t PARK_MAX_TRACKING_ERROR = 160;

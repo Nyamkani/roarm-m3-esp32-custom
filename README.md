@@ -291,3 +291,33 @@ mechanical coupling, actual park trajectories and load support, timeout
 handling, power cut-off and incomplete torque-release recovery. A
 position-goal increment is not itself a safe mechanical-speed limit.
 If park or torque verification enters ERROR, treat torque as UNKNOWN.
+
+
+## 2026-11 Servo ON/OFF preflight safety update
+
+The 2-task design remains intact: `ArmCommandTask` on Core 1 handles
+the host UART0 / JSON interface, while `ServoTask` on Core 0 owns
+both MotorInterface control and the servo UART1 bus.
+
+`T=211` now includes `torque_off_verified`, which is only true
+after **all seven** servo torque-enable registers have been checked
+OFF, or after a complete successful seven-servo OFF transaction with
+readback. It becomes false during ARMING, DISARMING, and ERROR. An
+output-inhibit flag is **not** evidence that physical torque is OFF.
+
+A new independent `MOTOR_VENDOR_SHOULDER_PARK_ENABLE=0` build guard
+prevents entry to factory-style PARKING before the dangerous ID13
+shoulder-release sequence is mechanically validated. `T=210,cmd=0`
+is rejected while this guard is off (T=0 still requests the separate
+immediate torque release path when physical torque control is enabled).
+This is deliberate: avoiding an accidental factory park is safer than
+attempting a trajectory with unverified coupling and joint limits.
+
+During PARKING, immediate-stop handling no longer changes the UART
+owner while a parameter request is still in flight; it drains the
+in-progress transaction before requesting torque release. A failed
+transaction enters ERROR; torque state then remains unknown.
+
+**The shipped firmware still keeps all hardware torque and POSITION
+outputs disabled.** All checks must be repeated by a local ESP-IDF
+build plus supported-arm testing before any physical enablement.

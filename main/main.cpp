@@ -152,6 +152,46 @@ void HandleJsonLine(const char* json) {
         return;
     }
 
+    // T=214: vendor-derived Servo OFF parking plan (read-only).
+    // The factory OFF routine parks before releasing all torque; ID 13
+    // is temporarily released/re-engaged, not sent a position goal.
+    // -1 means no position command for that servo in the vendor park step.
+    if (cJSON_IsObject(root) &&
+        cJSON_IsNumber(type) &&
+        type->valuedouble == 214.0)
+    {
+        cJSON_Delete(root);
+        MotorCommandFrame hold{};
+        if (!motor_interface.PreparePositionHold(hold))
+        {
+            std::puts("{\"T\":214,\"ok\":false,\"error\":\"park_preview_failed\"}");
+            return;
+        }
+
+        // RoArm-M3 vendor Move_to_location(): 2047 center, shoulder
+        // driving 2047-1024, elbow 2047+1024. The driven shoulder
+        // servo has no direct position goal in this sequence.
+        constexpr int kParkGoal[MOTOR_COUNT] =
+            {2047, 1023, -1, 3071, 2047, 2047, 2047};
+        int max_delta = 0;
+        for (size_t i = 0; i < MOTOR_COUNT; ++i)
+        {
+            if (kParkGoal[i] < 0) continue;
+            const int delta = kParkGoal[i] -
+                static_cast<int>(hold.motors[i].target_position);
+            const int magnitude = delta >= 0 ? delta : -delta;
+            if (magnitude > max_delta) max_delta = magnitude;
+        }
+        std::printf(
+            "{\"T\":214,\"ok\":true,\"dry_run\":true,"
+            "\"torque_write_enabled\":false,"
+            "\"park_goals\":[2047,1023,null,3071,2047,2047,2047],"
+            "\"max_delta_counts\":%d}\n",
+            max_delta
+        );
+        return;
+    }
+
     const bool feedback_requested =
         cJSON_IsObject(root) && cJSON_IsNumber(type) &&
         type->valuedouble == 105.0;

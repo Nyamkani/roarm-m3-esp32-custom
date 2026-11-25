@@ -321,3 +321,38 @@ transaction enters ERROR; torque state then remains unknown.
 **The shipped firmware still keeps all hardware torque and POSITION
 outputs disabled.** All checks must be repeated by a local ESP-IDF
 build plus supported-arm testing before any physical enablement.
+
+
+## No-park Servo ON/OFF bench command (guarded; 2026-11)
+
+The Servo ON/OFF-only bench path is separate from factory `T=210,cmd=0`
+(which parks before releasing torque). **All shipped physical write gates
+remain zero**.
+
+- `{"T":210,"cmd":1}`: request servo ON from DISARMED when physical
+  torque writes are enabled, via current-position HOLD preflight.
+  The reply `accepted` only means the command was queued; query
+  `{"T":211}` to observe the actual FSM state.
+- `{"T":215,"cmd":0}`: custom **no-park servo OFF** bench request,
+  accepted only from ARMING or ARMED with torque writes enabled. It
+  requests the existing 7-servo DISARMING / register readback sequence,
+  never a mechanical park. This **can cause the unsupported arm to fall**.
+  `T=211` must show `DISARMED` and `torque_off_verified:true` after
+  completion; otherwise treat physical torque as unknown.
+- `{"T":210,"cmd":0}`: still reserved for the factory-derived PARK
+  path and rejected by default because
+  `MOTOR_VENDOR_SHOULDER_PARK_ENABLE=0`.
+- `{"T":0}`: emergency software OFF request; not a hardware E-stop.
+- The ARMING FSM now times out after 5 seconds and cannot falsely
+  claim successful servo OFF if a UART transaction or torque release
+  remains unverified.
+
+**Test sequence while all physical output macros stay zero:**
+Build and flash on the target, confirm `T=211` reports
+`DISARMED`, `feedback_valid:true`, `torque_off_verified:true`, all
+output gates false. Confirm `T=215,cmd=0` and `T=210,cmd=1` both
+return `motor_unavailable`; repeat existing T212–T214 read-only
+diagnostics. This is a code-path/regression check, **not** a physical
+Servo ON/OFF test. Do not flip hardware output gates or attempt
+unsupervised servo activation without a mechanical support, load-limit,
+firmware and emergency power-stop test plan.

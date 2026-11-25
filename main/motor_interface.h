@@ -294,7 +294,7 @@ private:
     int64_t arm_start_us_ = 0;
     static constexpr int64_t ARM_TIMEOUT_US = 5000000;
     MotorCommandFrame hold_command_{};
-    enum class ParkPhase : uint8_t { RELEASE_SHOULDER, MOVE, SET_SHOULDER_GOAL, RESTORE_SHOULDER };
+    enum class ParkPhase : uint8_t { RELEASE_SHOULDER, MOVE, SET_SHOULDER_GOAL, VERIFY_SHOULDER_GOAL, RESTORE_SHOULDER };
     ParkPhase park_phase_ = ParkPhase::RELEASE_SHOULDER;
     bool park_busy_ = false;
     bool park_stop_pending_ = false;
@@ -308,12 +308,14 @@ private:
     static constexpr int32_t PARK_SHOULDER_COUPLING_TOLERANCE = 64;
     int64_t park_start_us_ = 0;
     uint8_t park_stable_count_ = 0;
+    uint8_t park_stage_ = 0; // base/shoulder -> wrist -> roll -> elbow -> gripper
     static constexpr int64_t PARK_TIMEOUT_US = 15000000;
     static constexpr int32_t PARK_STEP_COUNTS = 3;
     static constexpr int16_t PARK_GOALS[MOTOR_COUNT] =
         {2047, 1023, -1, 3071, 2047, 2047, 2047};
     bool PollArmPositionChecks();
     bool PollParkShoulder(bool enabled);
+    bool IsParkStageServo(size_t index) const;
 
     void CommIdle();
     void CommSendRequest();

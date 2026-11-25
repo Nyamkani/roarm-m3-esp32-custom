@@ -125,6 +125,33 @@ void HandleJsonLine(const char* json) {
         return;
     }
 
+    // T=213: read-only ARM preview with stillness and feedback checks.
+    // It never requests ARM, changes command snapshots or transmits writes.
+    if (cJSON_IsObject(root) &&
+        cJSON_IsNumber(type) &&
+        type->valuedouble == 213.0)
+    {
+        cJSON_Delete(root);
+        MotorCommandFrame hold{};
+        if (!motor_interface.PreviewPositionArm(hold))
+        {
+            std::puts("{\"T\":213,\"ok\":false,\"error\":\"arm_preview_failed\"}");
+            return;
+        }
+        std::printf(
+            "{\"T\":213,\"ok\":true,\"dry_run\":true,"
+            "\"torque_write_enabled\":false,\"positions\":[%d,%d,%d,%d,%d,%d,%d]}\n",
+            static_cast<int>(hold.motors[0].target_position),
+            static_cast<int>(hold.motors[1].target_position),
+            static_cast<int>(hold.motors[2].target_position),
+            static_cast<int>(hold.motors[3].target_position),
+            static_cast<int>(hold.motors[4].target_position),
+            static_cast<int>(hold.motors[5].target_position),
+            static_cast<int>(hold.motors[6].target_position)
+        );
+        return;
+    }
+
     const bool feedback_requested =
         cJSON_IsObject(root) && cJSON_IsNumber(type) &&
         type->valuedouble == 105.0;

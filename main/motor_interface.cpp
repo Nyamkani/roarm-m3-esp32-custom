@@ -1288,15 +1288,25 @@ void MotorInterface::CommProcess()
             EnterError();
             return;
         }
+        // ID13 torque has deliberately been released during vendor PARK.
+        // The normal paired-servo position relationship applies while both
+        // shoulder servos are engaged, not during this release window.
+        // Keep position/velocity feedback and tracking-error checks below;
+        // the actual passive ID13 trajectory requires hardware validation
+        // before re-enabling the vendor PARK feature flag.
         const int32_t shoulder_sum =
             static_cast<int32_t>(cycle_feedback_.motors[1].position) +
             static_cast<int32_t>(cycle_feedback_.motors[2].position);
-        if (std::abs(shoulder_sum - 4094) >
-            PARK_SHOULDER_COUPLING_TOLERANCE)
+        static int64_t last_shoulder_log_us = 0;
+        if (now_us - last_shoulder_log_us >= 250000)
         {
-            ESP_LOGE(TAG, "Park aborted: coupled shoulder mismatch");
-            EnterError();
-            return;
+            last_shoulder_log_us = now_us;
+            ESP_LOGI(TAG,
+                "PARK shoulder released: id12=%d id13=%d sum_error=%ld stage=%u",
+                static_cast<int>(cycle_feedback_.motors[1].position),
+                static_cast<int>(cycle_feedback_.motors[2].position),
+                static_cast<long>(shoulder_sum - 4094),
+                static_cast<unsigned>(park_stage_));
         }
         for (size_t i = 0; i < MOTOR_COUNT; ++i)
         {

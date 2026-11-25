@@ -539,6 +539,7 @@ void MotorInterface::ProcessInterfaceFSM()
         case MotorInterfaceState::DISARMED: StateDisarmed(); break;
         case MotorInterfaceState::ARMING: StateArming(); break;
         case MotorInterfaceState::ARMED: StateArmed(); break;
+        case MotorInterfaceState::PARKING: StateParking(); break;
         case MotorInterfaceState::DISARMING: StateDisarming(); break;
         case MotorInterfaceState::ERROR: StateError(); break;
     }
@@ -589,7 +590,10 @@ bool MotorInterface::PollTorque(bool enabled, bool verify_only)
         if (ret != ESP_OK)
         {
             ESP_LOGE(TAG, "Torque transaction request failed id=%u", static_cast<unsigned>(id));
-            EnterError();
+            if (state_ == MotorInterfaceState::ARMING)
+                ChangeState(MotorInterfaceState::DISARMING);
+            else
+                EnterError();
             return false;
         }
         torque_busy_ = true;
@@ -600,7 +604,10 @@ bool MotorInterface::PollTorque(bool enabled, bool verify_only)
         ESP_LOGE(TAG, "Torque verification failed id=%u err=%s",
                  static_cast<unsigned>(parameter_fsm_.GetServoID()),
                  esp_err_to_name(parameter_fsm_.GetError()));
-        EnterError();
+        if (state_ == MotorInterfaceState::ARMING)
+            ChangeState(MotorInterfaceState::DISARMING);
+        else
+            EnterError();
         return false;
     }
     if (result == ST3215ParameterFSM::Result::SUCCESS)

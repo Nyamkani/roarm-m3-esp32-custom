@@ -51,6 +51,9 @@
 // 실물 POSITION 명령 출력은 별도로 허용
 #define MOTOR_POSITION_OUTPUT_ENABLE 0
 #define MOTOR_PHYSICAL_SERVO_ENABLE 0 // physical opt-in, default OFF
+// The factory-style parking procedure temporarily releases shoulder ID13.
+// This requires separate supervised mechanical validation before use.
+#define MOTOR_VENDOR_SHOULDER_PARK_ENABLE 0
 
 #if MOTOR_CONTROL_MODE != MOTOR_CONTROL_PWM && \
     MOTOR_CONTROL_MODE != MOTOR_CONTROL_POSITION
@@ -172,6 +175,7 @@ public:
     void RequestServoOff();
     void RequestServoPark();
     MotorInterfaceState GetState() const { return state_public_.load(); }
+    bool IsTorqueOffVerified() const { return torque_off_public_.load(); }
 
 private:
     static void MainTask(void* arg);
@@ -281,6 +285,7 @@ private:
     size_t torque_index_ = 0;
     bool torque_busy_ = false;
     bool torque_off_verified_ = false;
+    std::atomic<bool> torque_off_public_{false};
     enum class ArmPhase : uint8_t { WRITE_HOLD, VERIFY_HOLD, VERIFY_POSE, TORQUE };
     ArmPhase arm_phase_ = ArmPhase::WRITE_HOLD;
     size_t arm_index_ = 0;
@@ -289,6 +294,7 @@ private:
     enum class ParkPhase : uint8_t { RELEASE_SHOULDER, MOVE, RESTORE_SHOULDER };
     ParkPhase park_phase_ = ParkPhase::RELEASE_SHOULDER;
     bool park_busy_ = false;
+    bool park_stop_pending_ = false;
     int64_t park_start_us_ = 0;
     uint8_t park_stable_count_ = 0;
     static constexpr int64_t PARK_TIMEOUT_US = 15000000;

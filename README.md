@@ -416,3 +416,38 @@ and individual mechanical travel limits are not calibrated by this
 firmware; incremental goal updates cannot guarantee an upper bound on
 actual joint speed or force. On ERROR or UART failure, physical torque
 may still be ON. Never assume `state=ERROR` equals motors-safe.
+
+
+## First live vendor PARK failure / fail-safe rollback (2026-11-26)
+
+Initial live bench feedback: initial DISARMED verified; Servo ON physically
+held the arm; `T=210,cmd=0` was accepted but later entered ERROR with
+`Park aborted: coupled shoulder mismatch`. The preceding
+`READ id=13 reg=TORQUE_ENABLE actual=1 expected=0 MISMATCH` is not on
+its own proof that the torque-OFF write failed: the parameter FSM
+normally reads the current register, logs the difference, then writes
+and verifies the requested value. The hardware state at ERROR is unknown.
+
+Root-cause code review found that the PARK MOVE path was checking
+`id12 + id13 == 4094` **after ID13 had deliberately been torque
+released**; that invariant only applies when both coupled servo
+torques are engaged. The erroneous MOVE-phase coupling check was
+replaced by diagnostic logging of both encoders. The initial
+pre-release coupling preflight is unchanged.
+
+**IMPORTANT**: As a conservative response to an actual hardware
+ERROR, `MOTOR_VENDOR_SHOULDER_PARK_ENABLE` was reset to `0`
+in `main/motor_interface.h`. The other supervised physical
+Servo ON/OFF output macros remain enabled. Thus a newly flashed
+build can still torque-on and process explicit no-park `T=215`
+OFF, but `T=210,cmd=0` is **rejected**, not silently replaced
+by an unparked torque release. This is intentional: do not run
+a further unattended parking motion while the ID12/13 passive
+shoulder movement has not been independently observed and verified.
+
+Power down at the manual switch and physically support the arm
+before touching the mechanism, reflashing or manually returning
+it to a safe pose. ERROR does not verify that the motors are
+unpowered. Review the complete torque transaction logs (including
+`WRITE` and readback), inspect joint motion/clearance, and only
+re-enable the vendor park guard after confirming the mechanism.

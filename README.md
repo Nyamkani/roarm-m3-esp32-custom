@@ -451,3 +451,31 @@ it to a safe pose. ERROR does not verify that the motors are
 unpowered. Review the complete torque transaction logs (including
 `WRITE` and readback), inspect joint motion/clearance, and only
 re-enable the vendor park guard after confirming the mechanism.
+
+
+## MCU-only restart with ST3215 torque retained — boot recovery
+
+When the ESP32 restarts but the ST3215 power remains on, servo RAM torque
+registers can retain `Torque Enable=1`. This is **not** the same as a
+POSITION mode EEPROM mismatch. The boot diagnosis now counts
+`init_torque_on_count_` separately from true configuration mismatches.
+
+- If all seven are torque OFF and mode checks pass:
+  `INIT -> READY -> DISARMED` (readback verified).
+- If one or more servos still have torque ON while all mode checks pass:
+  `INIT -> BOOT_RECOVERY`. It does **not** send a servo position target,
+  enable more torque, or silently release the arm. Feedback polling
+  continues; `T=211` reports `state=BOOT_RECOVERY` with
+  `torque_off_verified=false`.
+- With the arm physically supported, `{"T":215,"cmd":0}` explicitly
+  requests the existing seven-servo torque OFF and readback FSM:
+  `BOOT_RECOVERY -> DISARMING -> DISARMED`.
+- If operating mode/configuration is truly wrong, or UART reads fail,
+  boot still enters `ERROR`; no blind EEPROM writes are attempted.
+- Do **not** treat ESP32 reset as a mechanical recovery or safety stop.
+  A boot-time *automatic* seven-servo torque release is deliberately
+  omitted, because the arm may fall when no support is present.
+  Re-enable normal `T=210,cmd=1` only after verified DISARMED.
+- Vendor PARK remains disabled until physical shoulder movement is
+  validated. Do not use `T=210,cmd=0` as an alternative from
+  BOOT_RECOVERY.

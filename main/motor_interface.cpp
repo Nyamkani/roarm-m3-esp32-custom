@@ -93,6 +93,40 @@ bool MotorInterface::GetFeedbackFrame(
     return feedback_snapshot_.Read(out);
 }
 
+bool MotorInterface::PreparePositionHold(MotorCommandFrame& hold)
+{
+    hold = {};
+
+#if MOTOR_CONTROL_MODE != MOTOR_CONTROL_POSITION
+    return false;
+#else
+    if (GetState() != MotorInterfaceState::DISARMED)
+        return false;
+
+    SharedSnapshotFrame<MotorFeedbackFrame> feedback{};
+    if (!GetFeedbackFrame(feedback))
+        return false;
+
+    const int64_t now_us = esp_timer_get_time();
+    if (!ValidateFeedback(feedback.data, now_us))
+        return false;
+
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        const int32_t position = feedback.data.motors[i].position;
+        if (position < 0 || position > 4095)
+        {
+            hold = {};
+            return false;
+        }
+        hold.motors[i].target_position = static_cast<int16_t>(position);
+        hold.motors[i].target_velocity = 0;
+        hold.motors[i].output = 0;
+    }
+    return true;
+#endif
+}
+
 bool MotorInterface::GetJointFeedback(
     JointAngles& actual)
 {
@@ -831,23 +865,11 @@ void MotorInterface::CommProcess()
         return;
     }
 
-    // DISARMED still publishes feedback but cannot run PID or output PWM.
+    // DISARMED publishes feedback only; never runs PID or transmits commands.
     if (state_ != MotorInterfaceState::ARMED)
     {
         ChangeControlValidity(false);
         command_valid_ = false;
-
-#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
-
-        // POSITION: ST3215 internal position controller.
-        // No external PID calculation.
-        output_inhibit_ = false;
-        ChangeCommState(MotorCommState::SYNC_WRITE);
-        return;
-
-#endif
-
-
         cycle_command_ = {};
         output_inhibit_ = true;
         ChangeCommState(MotorCommState::COMPLETE);
@@ -874,6 +896,24 @@ void MotorInterface::CommProcess()
     cycle_command_ = cmd_frame.data;
     ChangeControlValidity(true);
 
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+    // The servo owns the low-level position loop. Never call the ESP32 PID.
+    // Physical transmission remains behind MOTOR_POSITION_OUTPUT_ENABLE and ARM.
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        const int32_t target = cycle_command_.motors[i].target_position;
+        if (target < 0 || target > 4095)
+        {
+            ChangeControlValidity(false);
+            output_inhibit_ = true;
+            ChangeCommState(MotorCommState::COMPLETE);
+            return;
+        }
+    }
+    output_inhibit_ = false;
+    ChangeCommState(MotorCommState::SYNC_WRITE);
+    return;
+#else
     // 3. PID update timing
     if (last_pid_update_us_ == 0)
     {
@@ -914,6 +954,7 @@ void MotorInterface::CommProcess()
     output_inhibit_ = false;
 
     ChangeCommState(MotorCommState::SYNC_WRITE);
+#endif  // MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
 }
 
 esp_err_t MotorInterface::SendSyncPWM(

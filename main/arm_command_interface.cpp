@@ -83,6 +83,32 @@ ArmCommandInterface::HandleJsonCommand(const char* json) {
             break;
         }
 
+// T=215: explicit no-park Servo OFF bench request. This is NOT a
+// manufacturer park command and may allow gravity-driven motion.
+if (t == 215.0)
+{
+    double cmd = 0.0;
+    if (!ReadFinite(root, "cmd", cmd) || cmd != 0.0)
+    {
+        result = CommandResult::INVALID_TARGET;
+        break;
+    }
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_TORQUE_WRITE_ENABLE
+    const MotorInterfaceState state = motor_.GetState();
+    if (state != MotorInterfaceState::ARMED &&
+        state != MotorInterfaceState::ARMING)
+    {
+        result = CommandResult::MOTOR_UNAVAILABLE;
+        break;
+    }
+    RequestStop();
+    result = CommandResult::ACCEPTED;
+#else
+    result = CommandResult::MOTOR_UNAVAILABLE;
+#endif
+    break;
+}
+
 // T=210: Servo Torque / ARM-DISARM control
 if (t == 210.0)
 {

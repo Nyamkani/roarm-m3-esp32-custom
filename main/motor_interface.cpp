@@ -482,6 +482,8 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             park_stop_pending_ = false;
             park_command_ = {};
             park_command_initialized_ = false;
+            park_goal_busy_ = false;
+            park_shoulder_hold_count_ = 0;
             park_last_goal_us_ = 0;
             output_inhibit_ = true;
             park_phase_ = ParkPhase::RELEASE_SHOULDER;
@@ -848,7 +850,7 @@ void MotorInterface::StateParking()
         // Do not interrupt a parameter transaction or hand UART to another
         // state while a reply may be in flight.
         output_inhibit_ = true;
-        if (park_busy_)
+        if (park_busy_ || park_goal_busy_)
         {
             const auto result = parameter_fsm_.Poll();
             if (result == ST3215ParameterFSM::Result::FAILED)
@@ -859,6 +861,7 @@ void MotorInterface::StateParking()
             if (result != ST3215ParameterFSM::Result::SUCCESS)
                 return;
             park_busy_ = false;
+            park_goal_busy_ = false;
         }
         if (comm_state_ != MotorCommState::IDLE)
         {
@@ -917,11 +920,53 @@ void MotorInterface::StateParking()
     {
         if (park_stable_count_ >= 10 && comm_state_ == MotorCommState::IDLE)
         {
-            park_phase_ = ParkPhase::RESTORE_SHOULDER;
+            park_phase_ = ParkPhase::SET_SHOULDER_GOAL;
+            park_goal_busy_ = false;
             return;
         }
         UpdateCommunicationError();
         ProcessCommunicationFSM();
+        return;
+    }
+    if (park_phase_ == ParkPhase::SET_SHOULDER_GOAL)
+    {
+        // Re-load ID13 goal from its actual released position BEFORE
+        // re-enabling torque, or an old goal can cause a sudden jump.
+        if (!park_goal_busy_)
+        {
+            SharedSnapshotFrame<MotorFeedbackFrame> feedback{};
+            if (!feedback_snapshot_.Read(feedback) ||
+                !ValidateFeedback(feedback.data, esp_timer_get_time()))
+            {
+                ESP_LOGE(TAG, "Park ID13 restore aborted: stale feedback");
+                EnterError();
+                return;
+            }
+            const auto pos = feedback.data.motors[2].position;
+            if (pos < 0 || pos > 4095)
+            {
+                EnterError();
+                return;
+            }
+            park_shoulder_hold_count_ = static_cast<uint16_t>(pos);
+            if (parameter_fsm_.SetGoalPosition(13, park_shoulder_hold_count_) != ESP_OK)
+            {
+                EnterError();
+                return;
+            }
+            park_goal_busy_ = true;
+        }
+        const auto result = parameter_fsm_.Poll();
+        if (result == ST3215ParameterFSM::Result::FAILED)
+        {
+            EnterError();
+            return;
+        }
+        if (result == ST3215ParameterFSM::Result::SUCCESS)
+        {
+            park_goal_busy_ = false;
+            park_phase_ = ParkPhase::RESTORE_SHOULDER;
+        }
         return;
     }
     if (PollParkShoulder(true))

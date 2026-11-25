@@ -130,14 +130,13 @@ if (t == 210.0)
             break;
         }
 
-        const int64_t now_us = esp_timer_get_time();
-
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
         // MotorInterface captures fresh encoder position as first hold.
         has_target_ = false;
         last_publish_us_ = 0;
         last_command_us_ = 0;
 #else
+        const int64_t now_us = esp_timer_get_time();
         if (last_command_us_ <= 0 ||
             now_us - last_command_us_ >= kCommandTimeoutUs)
         {

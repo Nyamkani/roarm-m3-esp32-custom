@@ -321,6 +321,10 @@ public:
     // Does not publish a command or transmit UART writes.
     bool PreparePositionHold(MotorCommandFrame& hold);
 
+    // Read-only ARM dry-run: fresh feedback and near-zero servo velocity.
+    // Not a physical torque safety guarantee.
+    bool PreviewPositionArm(MotorCommandFrame& hold);
+
 private:
     MotorFeedbackFrame cycle_feedback_{};
     MotorCommandFrame cycle_command_{};

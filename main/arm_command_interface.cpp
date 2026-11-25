@@ -95,10 +95,22 @@ if (t == 210.0)
         break;
     }
 
-    // DISARM: always allow a stop request.
+    // Vendor-style T210 OFF parks first; emergency T0 skips park.
     if (cmd == 0.0)
     {
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+        if (motor_.GetState() != MotorInterfaceState::ARMED)
+        {
+            result = CommandResult::MOTOR_UNAVAILABLE;
+            break;
+        }
+        has_target_ = false;
+        last_publish_us_ = 0;
+        last_command_us_ = 0;
+        motor_.RequestServoPark();
+#else
         RequestStop();
+#endif
         result = CommandResult::ACCEPTED;
         break;
     }
@@ -108,8 +120,11 @@ if (t == 210.0)
         result = CommandResult::MOTOR_UNAVAILABLE;
         break;
     #else
-        if (motor_.GetState() != MotorInterfaceState::DISARMED ||
-            !has_target_)
+        if (motor_.GetState() != MotorInterfaceState::DISARMED
+#if MOTOR_CONTROL_MODE != MOTOR_CONTROL_POSITION
+            || !has_target_
+#endif
+        )
         {
             result = CommandResult::MOTOR_UNAVAILABLE;
             break;
@@ -117,7 +132,12 @@ if (t == 210.0)
 
         const int64_t now_us = esp_timer_get_time();
 
-        // Reject missing or expired upper-level command.
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+        // MotorInterface captures fresh encoder position as first hold.
+        has_target_ = false;
+        last_publish_us_ = 0;
+        last_command_us_ = 0;
+#else
         if (last_command_us_ <= 0 ||
             now_us - last_command_us_ >= kCommandTimeoutUs)
         {
@@ -125,15 +145,13 @@ if (t == 210.0)
             result = CommandResult::MOTOR_UNAVAILABLE;
             break;
         }
-
-        // Ensure the current command is available before ARM request.
         if (!motor_.SetJointTargets(target_joints_))
         {
             result = CommandResult::INVALID_TARGET;
             break;
         }
-
         last_publish_us_ = now_us;
+#endif
 
         motor_.RequestServoOn();
 
@@ -145,6 +163,14 @@ if (t == 210.0)
 
 
 
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+        // Servo ON/OFF validation phase does not accept motion targets.
+        if (t == 102.0 || t == 1041.0)
+        {
+            result = CommandResult::MOTOR_UNAVAILABLE;
+            break;
+        }
+#endif
         if (t != 102.0 && t != 1041.0) {
             result = CommandResult::UNSUPPORTED_COMMAND;
             break;
@@ -205,6 +231,9 @@ if (t == 210.0)
 
 void ArmCommandInterface::Process()
 {
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+    return; // Reject stale goal refresh throughout Servo ON/OFF testing.
+#endif
     if (!has_target_)
         return;
 

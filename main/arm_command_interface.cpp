@@ -96,7 +96,8 @@ if (t == 215.0)
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_TORQUE_WRITE_ENABLE
     const MotorInterfaceState state = motor_.GetState();
     if (state != MotorInterfaceState::ARMED &&
-        state != MotorInterfaceState::ARMING)
+        state != MotorInterfaceState::ARMING &&
+        state != MotorInterfaceState::BOOT_RECOVERY)
     {
         result = CommandResult::MOTOR_UNAVAILABLE;
         break;

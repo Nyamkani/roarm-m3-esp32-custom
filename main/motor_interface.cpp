@@ -438,7 +438,19 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             command_valid_ = false;
             control_valid_ = false;
             init_mismatch_count_ = 0;
+            init_torque_on_count_ = 0;
             ResetPID();
+            break;
+        case MotorInterfaceState::BOOT_RECOVERY:
+            // External servos may still have torque enabled after MCU reset.
+            // Do not write new positions, re-arm or automatically cut torque.
+            torque_off_verified_ = false;
+            torque_off_public_.store(false);
+            output_inhibit_ = true;
+            command_valid_ = false;
+            control_valid_ = false;
+            ChangeCommState(MotorCommState::IDLE);
+            last_comm_cycle_us_ = 0;
             break;
         case MotorInterfaceState::READY:
             torque_off_public_.store(false);
@@ -553,6 +565,7 @@ void MotorInterface::ProcessInterfaceFSM()
         case MotorInterfaceState::INIT: StateInit(); break;
         case MotorInterfaceState::READY: StateReady(); break;
         case MotorInterfaceState::DISARMED: StateDisarmed(); break;
+        case MotorInterfaceState::BOOT_RECOVERY: StateBootRecovery(); break;
         case MotorInterfaceState::ARMING: StateArming(); break;
         case MotorInterfaceState::ARMED: StateArmed(); break;
         case MotorInterfaceState::PARKING: StateParking(); break;
@@ -590,6 +603,14 @@ void MotorInterface::StateInit()
 
     ChangeCommState(MotorCommState::IDLE);
     current_motor_index_ = 0;
+    if (init_torque_on_count_ != 0)
+    {
+        ESP_LOGW(TAG, "BOOT_RECOVERY: %u/7 servos report torque ON; "
+                      "support arm, then send T=215 cmd=0 for explicit OFF",
+                 static_cast<unsigned>(init_torque_on_count_));
+        ChangeState(MotorInterfaceState::BOOT_RECOVERY);
+        return;
+    }
     ChangeState(MotorInterfaceState::READY);
 }
 
@@ -643,6 +664,21 @@ void MotorInterface::StateReady()
         torque_off_public_.store(true);
         ChangeState(MotorInterfaceState::DISARMED);
     }
+}
+
+void MotorInterface::StateBootRecovery()
+{
+    // Never silently switch off torque on MCU reboot: an unsupported arm
+    // could fall. Host must explicitly authorize no-park torque release.
+    if (comm_state_ == MotorCommState::IDLE &&
+        servo_request_.exchange(ServoRequest::NONE) == ServoRequest::OFF)
+    {
+        ESP_LOGW(TAG, "BOOT_RECOVERY explicit torque OFF requested");
+        ChangeState(MotorInterfaceState::DISARMING);
+        return;
+    }
+    UpdateCommunicationError();
+    ProcessCommunicationFSM();  // feedback only, no position output
 }
 
 void MotorInterface::StateDisarmed()
@@ -1051,6 +1087,7 @@ void MotorInterface::ProcessCommunicationFSM()
     while (true)
     {
         if (state_ != MotorInterfaceState::DISARMED &&
+            state_ != MotorInterfaceState::BOOT_RECOVERY &&
             state_ != MotorInterfaceState::ARMED &&
             state_ != MotorInterfaceState::PARKING)
             return;
@@ -1980,7 +2017,10 @@ void MotorInterface::ProcessMotorInitialization()
             {
                 if (parameter_fsm_.HasValueMismatch())
                 {
-                    ++init_mismatch_count_;
+                    ++init_torque_on_count_;
+                    ESP_LOGW(TAG,
+                        "INIT servo=%u torque is ON after MCU restart",
+                        static_cast<unsigned>(parameter_fsm_.GetServoID()));
                     init_state_ = MotorInitState::SET_TORQUE_LIMIT;
                 }
                 else

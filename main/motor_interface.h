@@ -95,6 +95,13 @@ static constexpr uint8_t SERVO_IDS[MOTOR_COUNT] =
 #define MOTOR_INIT_TORQUE_LIMIT_ENABLE 0
 static constexpr uint16_t MOTOR_INIT_TORQUE_LIMIT = 1000;
 
+// Physical POSITION output remains locked until hold-on-ARM,
+// motion limits and partial-ARM rollback have been bench-verified.
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && \
+    (MOTOR_POSITION_OUTPUT_ENABLE || MOTOR_TORQUE_WRITE_ENABLE)
+#error "POSITION physical output locked: complete ARM safety validation first"
+#endif
+
 enum class ServoReceiveStatus : uint8_t
 {
     WAITING,
@@ -309,6 +316,10 @@ public:
     bool GetFeedbackFrame(
         SharedSnapshotFrame<MotorFeedbackFrame>& out);
     bool GetJointFeedback(JointAngles& actual);
+
+    // Read-only preflight: copies fresh servo feedback into hold targets.
+    // Does not publish a command or transmit UART writes.
+    bool PreparePositionHold(MotorCommandFrame& hold);
 
 private:
     MotorFeedbackFrame cycle_feedback_{};

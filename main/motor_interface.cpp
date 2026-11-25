@@ -1038,6 +1038,31 @@ void MotorInterface::StateParking()
     {
         if (!park_goal_busy_)
         {
+            if (parameter_fsm_.VerifyGoalPosition(13, park_shoulder_hold_count_) != ESP_OK)
+            {
+                EnterError();
+                return;
+            }
+            park_goal_busy_ = true;
+        }
+        const auto result = parameter_fsm_.Poll();
+        if (result == ST3215ParameterFSM::Result::FAILED)
+        {
+            ESP_LOGE(TAG, "Park ID13 restore aborted: goal position mismatch");
+            EnterError();
+            return;
+        }
+        if (result == ST3215ParameterFSM::Result::SUCCESS)
+        {
+            park_goal_busy_ = false;
+            park_phase_ = ParkPhase::VERIFY_SHOULDER_POSITION;
+        }
+        return;
+    }
+    if (park_phase_ == ParkPhase::VERIFY_SHOULDER_POSITION)
+    {
+        if (!park_goal_busy_)
+        {
             if (parameter_fsm_.VerifyPresentPosition(13, park_shoulder_hold_count_) != ESP_OK)
             {
                 EnterError();
@@ -1539,28 +1564,30 @@ esp_err_t MotorInterface::SendSyncPosition(
     uint8_t ids[MOTOR_COUNT]{};
     uint8_t position_data[MOTOR_COUNT * POSITION_SIZE]{};
 
+    size_t servo_count = 0;
     for (size_t i = 0; i < MOTOR_COUNT; ++i)
     {
-        const int32_t target =
-            command.motors[i].target_position;
+        // Factory PARK releases ID13 while ID12 drives the coupled shoulder.
+        // Do not overwrite ID13's goal during this torque-off MOVE phase.
+        if (state_ == MotorInterfaceState::PARKING &&
+            park_phase_ == ParkPhase::MOVE && motors_[i].GetID() == 13)
+            continue;
 
-        // 최초 단일 회전 위치 제어 검증 범위
+        const int32_t target = command.motors[i].target_position;
         if (target < 0 || target > 4095)
-        {
             return ESP_ERR_INVALID_ARG;
-        }
 
-        ids[i] = motors_[i].GetID();
-
-        const uint16_t raw =
-            static_cast<uint16_t>(target);
-
-        position_data[i * 2] =
+        ids[servo_count] = motors_[i].GetID();
+        const uint16_t raw = static_cast<uint16_t>(target);
+        position_data[servo_count * POSITION_SIZE] =
             static_cast<uint8_t>(raw & 0xFF);
-
-        position_data[i * 2 + 1] =
+        position_data[servo_count * POSITION_SIZE + 1] =
             static_cast<uint8_t>((raw >> 8) & 0xFF);
+        ++servo_count;
     }
+
+    if (servo_count == 0)
+        return ESP_ERR_INVALID_STATE;
 
     ST3215Request request{};
 
@@ -1568,9 +1595,9 @@ esp_err_t MotorInterface::SendSyncPosition(
     request.address = POSITION_ADDRESS;
     request.data_size = POSITION_SIZE;
     request.servo_ids = ids;
-    request.servo_count = MOTOR_COUNT;
+    request.servo_count = servo_count;
     request.data = position_data;
-    request.data_len = sizeof(position_data);
+    request.data_len = servo_count * POSITION_SIZE;
 
     uint8_t tx_buffer[ST3215::MAX_PACKET_SIZE]{};
     size_t tx_len = 0;

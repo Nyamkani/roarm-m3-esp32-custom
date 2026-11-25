@@ -37,6 +37,9 @@ public:
     esp_err_t SetTorqueEnable(uint8_t id, bool enabled);
     esp_err_t VerifyTorqueEnable(uint8_t id, bool enabled);
     esp_err_t SetTorqueLimit(uint8_t id, uint16_t limit);
+    esp_err_t SetGoalPosition(uint8_t id, uint16_t counts);
+    esp_err_t VerifyGoalPosition(uint8_t id, uint16_t counts);
+    esp_err_t VerifyPresentPosition(uint8_t id, uint16_t counts);
     // Position-offset writes intentionally require an explicit maintenance path.
     Result Poll();
     Result GetResult() const { return result_; }

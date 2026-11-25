@@ -465,6 +465,7 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             arm_phase_ = ArmPhase::WRITE_HOLD;
             arm_index_ = 0;
             arm_busy_ = false;
+            arm_stop_pending_ = false;
             torque_index_ = 0;
             torque_busy_ = false;
             break;
@@ -716,7 +717,26 @@ void MotorInterface::StateArming()
 {
 #if MOTOR_TORQUE_WRITE_ENABLE
     if (servo_request_.exchange(ServoRequest::NONE) == ServoRequest::OFF)
+        arm_stop_pending_ = true;
+
+    if (arm_stop_pending_)
     {
+        // Never hand UART1 to DISARMING while an ARM transaction is in flight.
+        // Finish its current readback, then attempt all-servo OFF rollback.
+        if (arm_busy_ || torque_busy_)
+        {
+            const auto result = parameter_fsm_.Poll();
+            if (result == ST3215ParameterFSM::Result::BUSY)
+                return;
+            if (result == ST3215ParameterFSM::Result::FAILED)
+            {
+                ESP_LOGE(TAG, "ARM cancellation transaction failed; torque unknown");
+                EnterError();
+                return;
+            }
+            arm_busy_ = false;
+            torque_busy_ = false;
+        }
         ChangeState(MotorInterfaceState::DISARMING);
         return;
     }

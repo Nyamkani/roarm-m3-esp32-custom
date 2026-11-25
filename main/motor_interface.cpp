@@ -46,6 +46,7 @@ esp_err_t MotorInterface::Initialize(
 
 void MotorInterface::RequestServoOn() { servo_request_.store(ServoRequest::ON); }
 void MotorInterface::RequestServoOff() { servo_request_.store(ServoRequest::OFF); }
+void MotorInterface::RequestServoPark() { servo_request_.store(ServoRequest::PARK); }
 
 ST3215* MotorInterface::GetMotor(size_t index)
 {
@@ -446,6 +447,7 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             torque_off_verified_ = false;
             break;
         case MotorInterfaceState::DISARMED:
+            hold_command_ = {};
             output_inhibit_ = true;
             command_valid_ = false;
             control_valid_ = false;
@@ -457,6 +459,9 @@ void MotorInterface::EnterState(MotorInterfaceState state)
         case MotorInterfaceState::ARMING:
             output_inhibit_ = true;
             ResetPID();
+            arm_phase_ = ArmPhase::WRITE_HOLD;
+            arm_index_ = 0;
+            arm_busy_ = false;
             torque_index_ = 0;
             torque_busy_ = false;
             break;
@@ -467,6 +472,14 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             output_inhibit_ = true;
             ChangeCommState(MotorCommState::IDLE);
             last_comm_cycle_us_ = 0;
+            break;
+        case MotorInterfaceState::PARKING:
+            output_inhibit_ = true;
+            park_phase_ = ParkPhase::RELEASE_SHOULDER;
+            park_start_us_ = esp_timer_get_time();
+            park_stable_count_ = 0;
+            park_busy_ = false;
+            ChangeCommState(MotorCommState::IDLE);
             break;
         case MotorInterfaceState::DISARMING:
             output_inhibit_ = true;
@@ -616,6 +629,16 @@ void MotorInterface::StateDisarmed()
         if (req == ServoRequest::ON)
         {
 #if MOTOR_TORQUE_WRITE_ENABLE
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+            MotorCommandFrame hold{};
+            if (torque_off_verified_ && PreviewPositionArm(hold))
+            {
+                hold_command_ = hold;
+                ChangeState(MotorInterfaceState::ARMING);
+                return;
+            }
+            ESP_LOGW(TAG, "ARM rejected: current pose invalid or moving");
+#else
             SharedSnapshotFrame<MotorCommandFrame> cmd{};
             SharedSnapshotFrame<MotorFeedbackFrame> fb{};
             const int64_t now = esp_timer_get_time();
@@ -627,6 +650,7 @@ void MotorInterface::StateDisarmed()
                 return;
             }
             ESP_LOGW(TAG, "ARM rejected: invalid command, feedback or torque OFF");
+#endif
 #else
             ESP_LOGW(TAG, "ARM rejected: MOTOR_TORQUE_WRITE_ENABLE=0");
 #endif
@@ -636,18 +660,71 @@ void MotorInterface::StateDisarmed()
     ProcessCommunicationFSM();
 }
 
+bool MotorInterface::PollArmPositionChecks()
+{
+    if (arm_index_ >= MOTOR_COUNT) return true;
+    const uint8_t id = motors_[arm_index_].GetID();
+    const uint16_t goal =
+        static_cast<uint16_t>(hold_command_.motors[arm_index_].target_position);
+    if (!arm_busy_)
+    {
+        esp_err_t err = ESP_ERR_INVALID_STATE;
+        if (arm_phase_ == ArmPhase::WRITE_HOLD)
+            err = parameter_fsm_.SetGoalPosition(id, goal);
+        else if (arm_phase_ == ArmPhase::VERIFY_HOLD)
+            err = parameter_fsm_.VerifyGoalPosition(id, goal);
+        else if (arm_phase_ == ArmPhase::VERIFY_POSE)
+            err = parameter_fsm_.VerifyPresentPosition(id, goal);
+        if (err != ESP_OK)
+        {
+            ChangeState(MotorInterfaceState::DISARMING);
+            return false;
+        }
+        arm_busy_ = true;
+    }
+    const auto result = parameter_fsm_.Poll();
+    if (result == ST3215ParameterFSM::Result::FAILED)
+    {
+        ESP_LOGE(TAG, "ARM goal/pose verification failed servo=%u", id);
+        ChangeState(MotorInterfaceState::DISARMING);
+        return false;
+    }
+    if (result == ST3215ParameterFSM::Result::SUCCESS)
+    {
+        arm_busy_ = false;
+        ++arm_index_;
+    }
+    return arm_index_ >= MOTOR_COUNT;
+}
+
 void MotorInterface::StateArming()
 {
 #if MOTOR_TORQUE_WRITE_ENABLE
     if (servo_request_.exchange(ServoRequest::NONE) == ServoRequest::OFF)
     {
-        // A partial ARM must enter explicit rollback; do not report DISARMED.
         ChangeState(MotorInterfaceState::DISARMING);
         return;
     }
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+    if (arm_phase_ != ArmPhase::TORQUE)
+    {
+        if (!PollArmPositionChecks() ||
+            state_ != MotorInterfaceState::ARMING) return;
+        arm_index_ = 0;
+        arm_busy_ = false;
+        if (arm_phase_ == ArmPhase::WRITE_HOLD)
+            arm_phase_ = ArmPhase::VERIFY_HOLD;
+        else if (arm_phase_ == ArmPhase::VERIFY_HOLD)
+            arm_phase_ = ArmPhase::VERIFY_POSE;
+        else
+            arm_phase_ = ArmPhase::TORQUE;
+        return;
+    }
+#endif
     if (PollTorque(true, false))
     {
         torque_off_verified_ = false;
+        ESP_LOGI(TAG, "Servo ON verified (all 7)");
         ChangeState(MotorInterfaceState::ARMED);
     }
 #else
@@ -655,16 +732,97 @@ void MotorInterface::StateArming()
 #endif
 }
 
+bool MotorInterface::PollParkShoulder(bool enabled)
+{
+    if (!park_busy_)
+    {
+        if (parameter_fsm_.SetTorqueEnable(13, enabled) != ESP_OK)
+        {
+            EnterError();
+            return false;
+        }
+        park_busy_ = true;
+    }
+    auto result = parameter_fsm_.Poll();
+    if (result == ST3215ParameterFSM::Result::FAILED)
+    {
+        EnterError();
+        return false;
+    }
+    if (result == ST3215ParameterFSM::Result::SUCCESS)
+    {
+        park_busy_ = false;
+        return true;
+    }
+    return false;
+}
+
 void MotorInterface::StateArmed()
 {
-    if (comm_state_ == MotorCommState::IDLE &&
-        servo_request_.exchange(ServoRequest::NONE) == ServoRequest::OFF)
+    if (comm_state_ == MotorCommState::IDLE)
+    {
+        const ServoRequest request = servo_request_.exchange(ServoRequest::NONE);
+        if (request == ServoRequest::OFF)
+        {
+            ChangeState(MotorInterfaceState::DISARMING);
+            return;
+        }
+        if (request == ServoRequest::PARK)
+        {
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+            ChangeState(MotorInterfaceState::PARKING);
+#else
+            ChangeState(MotorInterfaceState::DISARMING);
+#endif
+            return;
+        }
+    }
+    UpdateCommunicationError();
+    ProcessCommunicationFSM();
+}
+
+void MotorInterface::StateParking()
+{
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_TORQUE_WRITE_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE
+    if (servo_request_.exchange(ServoRequest::NONE) == ServoRequest::OFF)
     {
         ChangeState(MotorInterfaceState::DISARMING);
         return;
     }
-    UpdateCommunicationError();
-    ProcessCommunicationFSM();
+    if (esp_timer_get_time() - park_start_us_ > PARK_TIMEOUT_US)
+    {
+        ESP_LOGE(TAG, "PARK timeout; servo torque may remain enabled");
+        EnterError();
+        return;
+    }
+    if (park_phase_ == ParkPhase::RELEASE_SHOULDER)
+    {
+        if (PollParkShoulder(false))
+        {
+            park_phase_ = ParkPhase::MOVE;
+            ChangeCommState(MotorCommState::IDLE);
+            last_comm_cycle_us_ = 0;
+        }
+        return;
+    }
+    if (park_phase_ == ParkPhase::MOVE)
+    {
+        if (park_stable_count_ >= 10 && comm_state_ == MotorCommState::IDLE)
+        {
+            park_phase_ = ParkPhase::RESTORE_SHOULDER;
+            return;
+        }
+        UpdateCommunicationError();
+        ProcessCommunicationFSM();
+        return;
+    }
+    if (PollParkShoulder(true))
+    {
+        ChangeState(MotorInterfaceState::DISARMING);
+    }
+#else
+    EnterError();
+#endif
 }
 
 void MotorInterface::StateDisarming()
@@ -691,7 +849,8 @@ void MotorInterface::ProcessCommunicationFSM()
     while (true)
     {
         if (state_ != MotorInterfaceState::DISARMED &&
-            state_ != MotorInterfaceState::ARMED)
+            state_ != MotorInterfaceState::ARMED &&
+            state_ != MotorInterfaceState::PARKING)
             return;
 
         if (comm_state_ != MotorCommState::IDLE &&
@@ -905,7 +1064,8 @@ void MotorInterface::CommProcess()
     }
 
     // DISARMED publishes feedback only; never runs PID or transmits commands.
-    if (state_ != MotorInterfaceState::ARMED)
+    if (state_ != MotorInterfaceState::ARMED &&
+        state_ != MotorInterfaceState::PARKING)
     {
         ChangeControlValidity(false);
         command_valid_ = false;
@@ -915,6 +1075,28 @@ void MotorInterface::CommProcess()
         return;
     }
 
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+    // Initial hold and park targets are owned by the Servo FSM, not JSON.
+    if (state_ == MotorInterfaceState::PARKING)
+    {
+        cycle_command_ = {};
+        for (size_t i = 0; i < MOTOR_COUNT; ++i)
+        {
+            const int32_t current = cycle_feedback_.motors[i].position;
+            const int32_t goal = PARK_GOALS[i] < 0 ? current : PARK_GOALS[i];
+            const int32_t step = std::clamp(
+                goal - current, -PARK_STEP_COUNTS, PARK_STEP_COUNTS);
+            cycle_command_.motors[i].target_position =
+                static_cast<int16_t>(current + step);
+        }
+    }
+    else cycle_command_ = hold_command_;
+    command_valid_ = true;
+    ChangeControlValidity(true);
+    output_inhibit_ = false;
+    ChangeCommState(MotorCommState::SYNC_WRITE);
+    return;
+#endif
     // 2. Command validation
     SharedSnapshotFrame<MotorCommandFrame> cmd_frame{};
 
@@ -1123,7 +1305,8 @@ void MotorInterface::CommSyncWrite()
 #endif
 
     if (!output_enabled ||
-        state_ != MotorInterfaceState::ARMED ||
+        (state_ != MotorInterfaceState::ARMED &&
+         state_ != MotorInterfaceState::PARKING) ||
         servo_request_.load() == ServoRequest::OFF ||
         !command_valid_ ||
         output_inhibit_)
@@ -1174,8 +1357,28 @@ void MotorInterface::CommComplete()
     }
 #endif
 
-    // All six feedback responses were validated.
+    // All seven feedback responses were validated.
     feedback_snapshot_.Write(cycle_feedback_);
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+    if (state_ == MotorInterfaceState::PARKING &&
+        park_phase_ == ParkPhase::MOVE)
+    {
+        bool stable = true;
+        for (size_t i = 0; i < MOTOR_COUNT; ++i)
+        {
+            if (PARK_GOALS[i] < 0) continue;
+            const int32_t diff = PARK_GOALS[i] - cycle_feedback_.motors[i].position;
+            const int32_t vel = cycle_feedback_.motors[i].velocity;
+            if (diff < -10 || diff > 10 || vel < -50 || vel > 50)
+            {
+                stable = false;
+                break;
+            }
+        }
+        park_stable_count_ = stable ?
+            static_cast<uint8_t>(std::min<int>(park_stable_count_ + 1, 10)) : 0;
+    }
+#endif
 
     #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
     static int64_t last_log_us = 0;

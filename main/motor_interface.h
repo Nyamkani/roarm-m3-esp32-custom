@@ -316,7 +316,7 @@ private:
     static constexpr int64_t PARK_TIMEOUT_US = 15000000;
     static constexpr int32_t PARK_STEP_COUNTS = 3;
     static constexpr int16_t PARK_GOALS[MOTOR_COUNT] =
-        {2047, 1023, -1, 3071, 2047, 2047, 2047};
+        {2047, 1023, -1, 3039, 2047, 2047, 2047};
     bool PollArmPositionChecks();
     bool PollParkShoulder(bool enabled);
     bool IsParkStageServo(size_t index) const;

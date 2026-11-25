@@ -47,6 +47,7 @@ const char* MotorStateToString(MotorInterfaceState state)
         case MotorInterfaceState::DISARMED:   return "DISARMED";
         case MotorInterfaceState::ARMING:     return "ARMING";
         case MotorInterfaceState::ARMED:      return "ARMED";
+        case MotorInterfaceState::PARKING:    return "PARKING";
         case MotorInterfaceState::DISARMING:  return "DISARMING";
         case MotorInterfaceState::ERROR:      return "ERROR";
         default:                              return "UNKNOWN";

@@ -87,12 +87,14 @@ void HandleJsonLine(const char* json) {
             "\"torque_write_enabled\":%s,"
             "\"pwm_output_enabled\":%s,"
             "\"position_output_enabled\":%s,"
+            "\"physical_servo_enabled\":%s,"
             "\"control_mode\":\"%s\"}\n",
             MotorStateToString(state),
             feedback_valid ? "true" : "false",
             MOTOR_TORQUE_WRITE_ENABLE ? "true" : "false",
             MOTOR_PWM_OUTPUT_ENABLE ? "true" : "false",
             MOTOR_POSITION_OUTPUT_ENABLE ? "true" : "false",
+            MOTOR_PHYSICAL_SERVO_ENABLE ? "true" : "false",
             MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION ? "POSITION" : "PWM"
         );
 

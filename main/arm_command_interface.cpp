@@ -99,7 +99,8 @@ if (t == 210.0)
     if (cmd == 0.0)
     {
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
-        if (motor_.GetState() != MotorInterfaceState::ARMED)
+        if (motor_.GetState() != MotorInterfaceState::ARMED ||
+            !MOTOR_VENDOR_SHOULDER_PARK_ENABLE)
         {
             result = CommandResult::MOTOR_UNAVAILABLE;
             break;

@@ -836,6 +836,18 @@ void MotorInterface::CommProcess()
     {
         ChangeControlValidity(false);
         command_valid_ = false;
+
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+
+        // POSITION: ST3215 internal position controller.
+        // No external PID calculation.
+        output_inhibit_ = false;
+        ChangeCommState(MotorCommState::SYNC_WRITE);
+        return;
+
+#endif
+
+
         cycle_command_ = {};
         output_inhibit_ = true;
         ChangeCommState(MotorCommState::COMPLETE);
@@ -957,13 +969,84 @@ esp_err_t MotorInterface::SendSyncPWM(
 }
 
 
+esp_err_t MotorInterface::SendSyncPosition(
+    const MotorCommandFrame& command)
+{
+    constexpr uint8_t POSITION_ADDRESS = 42;
+    constexpr uint8_t POSITION_SIZE = 2;
+
+    uint8_t ids[MOTOR_COUNT]{};
+    uint8_t position_data[MOTOR_COUNT * POSITION_SIZE]{};
+
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        const int32_t target =
+            command.motors[i].target_position;
+
+        // 최초 단일 회전 위치 제어 검증 범위
+        if (target < 0 || target > 4095)
+        {
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        ids[i] = motors_[i].GetID();
+
+        const uint16_t raw =
+            static_cast<uint16_t>(target);
+
+        position_data[i * 2] =
+            static_cast<uint8_t>(raw & 0xFF);
+
+        position_data[i * 2 + 1] =
+            static_cast<uint8_t>((raw >> 8) & 0xFF);
+    }
+
+    ST3215Request request{};
+
+    request.command = ST3215Command::SYNC_WRITE;
+    request.address = POSITION_ADDRESS;
+    request.data_size = POSITION_SIZE;
+    request.servo_ids = ids;
+    request.servo_count = MOTOR_COUNT;
+    request.data = position_data;
+    request.data_len = sizeof(position_data);
+
+    uint8_t tx_buffer[ST3215::MAX_PACKET_SIZE]{};
+    size_t tx_len = 0;
+
+    const esp_err_t err = ST3215::Serialize(
+        request,
+        tx_buffer,
+        sizeof(tx_buffer),
+        tx_len
+    );
+
+    if (err != ESP_OK)
+        return err;
+
+    return SendRequest(
+        tx_buffer,
+        tx_len,
+        pdMS_TO_TICKS(2)
+    );
+}
+
+
 void MotorInterface::CommSyncWrite()
 {
-#if MOTOR_PWM_OUTPUT_ENABLE
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+    constexpr bool output_enabled =
+        MOTOR_POSITION_OUTPUT_ENABLE;
+#else
+    constexpr bool output_enabled =
+        MOTOR_PWM_OUTPUT_ENABLE;
+#endif
 
-    if (state_ != MotorInterfaceState::ARMED ||
+    if (!output_enabled ||
+        state_ != MotorInterfaceState::ARMED ||
         servo_request_.load() == ServoRequest::OFF ||
-        !command_valid_ || output_inhibit_)
+        !command_valid_ ||
+        output_inhibit_)
     {
         ChangeCommState(MotorCommState::COMPLETE);
         return;
@@ -979,16 +1062,21 @@ void MotorInterface::CommSyncWrite()
         return;
     }
 
-    if (SendSyncPWM(cycle_command_) != ESP_OK)
+    esp_err_t err = ESP_FAIL;
+
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+    err = SendSyncPosition(cycle_command_);
+#else
+    err = SendSyncPWM(cycle_command_);
+#endif
+
+    if (err != ESP_OK)
     {
         EnterError();
         return;
     }
 
     cycle_write_sent_ = true;
-
-#endif
-
     ChangeCommState(MotorCommState::COMPLETE);
 }
 
@@ -1009,6 +1097,30 @@ void MotorInterface::CommComplete()
     // All six feedback responses were validated.
     feedback_snapshot_.Write(cycle_feedback_);
 
+    #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+    static int64_t last_log_us = 0;
+    const int64_t now_us = esp_timer_get_time();
+
+    if (now_us - last_log_us >= 1000000)
+    {
+        last_log_us = now_us;
+
+        for (size_t i = 0; i < MOTOR_COUNT; ++i)
+        {
+            const auto& fb = cycle_feedback_.motors[i];
+
+            ESP_LOGI(
+                TAG,
+                "POSITION FB id=%u pos=%d vel=%d current=%d valid=%u",
+                static_cast<unsigned>(motors_[i].GetID()),
+                static_cast<int>(fb.position),
+                static_cast<int>(fb.velocity),
+                static_cast<int>(fb.current),
+                static_cast<unsigned>(fb.valid)
+            );
+        }
+    }
+#endif
 
     ChangeCommState(MotorCommState::IDLE);
 }
@@ -1230,13 +1342,24 @@ void MotorInterface::ProcessMotorInitialization()
         case MotorInitState::SET_MODE:
         {
             const uint8_t id = motors_[init_motor_index_].GetID();
-#if MOTOR_EEPROM_WRITE_ENABLE
-            const esp_err_t err = parameter_fsm_.SetOperatingMode(
-                id, ST3215ParameterFSM::Mode::PWM_OPEN);
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+
+    const esp_err_t err =
+        parameter_fsm_.VerifyOperatingMode(
+            id, ST3215ParameterFSM::Mode::POSITION);
+
+#elif MOTOR_EEPROM_WRITE_ENABLE
+
+    const esp_err_t err =
+        parameter_fsm_.SetOperatingMode(
+            id, ST3215ParameterFSM::Mode::PWM_OPEN);
+
 #else
-            // EEPROM writes disabled: mode must still be READ-verified.
-            const esp_err_t err = parameter_fsm_.VerifyOperatingMode(
-                id, ST3215ParameterFSM::Mode::PWM_OPEN);
+
+    const esp_err_t err =
+        parameter_fsm_.VerifyOperatingMode(
+            id, ST3215ParameterFSM::Mode::PWM_OPEN);
+
 #endif
             if (err != ESP_OK)
             {

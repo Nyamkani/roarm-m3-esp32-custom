@@ -42,6 +42,25 @@
 #define MOTOR_PWM_OUTPUT_ENABLE 0
 #define MOTOR_TORQUE_WRITE_ENABLE 0 // physical torque writes require explicit opt-in
 
+
+#define MOTOR_CONTROL_PWM       0
+#define MOTOR_CONTROL_POSITION  1
+
+#define MOTOR_CONTROL_MODE MOTOR_CONTROL_POSITION
+
+// 실물 POSITION 명령 출력은 별도로 허용
+#define MOTOR_POSITION_OUTPUT_ENABLE 0
+
+#if MOTOR_CONTROL_MODE != MOTOR_CONTROL_PWM && \
+    MOTOR_CONTROL_MODE != MOTOR_CONTROL_POSITION
+#error "Invalid motor control mode"
+#endif
+
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && \
+    MOTOR_EEPROM_WRITE_ENABLE
+#error "POSITION mode must not write operating mode EEPROM"
+#endif
+
 static constexpr int64_t CONTROL_PERIOD_US = 10000;
 static constexpr int64_t CYCLE_BUDGET_US   = 5000;
 static constexpr int64_t RESPONSE_TIMEOUT_US = 2000;
@@ -260,7 +279,7 @@ private:
     void CommComplete();
 
 private:
-    static constexpr int64_t COMM_TIMEOUT_US = 5000;
+    static constexpr int64_t COMM_TIMEOUT_US = 30000;
     static constexpr int64_t ERROR_WINDOW_US = 1000000;
     static constexpr int64_t RX_RECOVERY_US = 2000;
     static constexpr uint32_t ERROR_THRESHOLD = 3;
@@ -306,6 +325,10 @@ private:
     void CommSyncWrite();
     esp_err_t SendSyncPWM(
         const MotorCommandFrame& command);
+
+    esp_err_t SendSyncPosition(
+        const MotorCommandFrame& command
+    );
 
 private:
 #if MOTOR_PERF_LOG_ENABLE

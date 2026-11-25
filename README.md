@@ -255,3 +255,39 @@ shoulder synchronization, and a deliberate stop-mode policy.
 
 Until those checks and partial-torque rollback are implemented, the
 compile-time POSITION output/torque lock remains in force.
+
+
+## Servo ON/OFF FSM integration (unverified physical output)
+
+Current code contains a **guarded** Servo ON/OFF execution path. Physical
+actuation is **OFF** by default: `MOTOR_PHYSICAL_SERVO_ENABLE=0`,
+`MOTOR_TORQUE_WRITE_ENABLE=0`, `MOTOR_POSITION_OUTPUT_ENABLE=0`.
+Only deliberate opt-in to **all three** can compile with physical torque
+and POSITION output; do not change these defaults on an unsupported arm.
+
+Command meanings in POSITION:
+- `T=210,cmd=1` (when explicitly enabled): DISARMED -> ARMING; capture
+  7 fresh stationary encoder positions, write those exact goal counts while
+  torque is off, verify goals and re-read actual positions within 8 counts,
+  enable torque sequentially with readback verification, then ARMED. The
+  initial ARMED command is the captured pose, **not** any prior JSON goal.
+- `T=210,cmd=0`: ARMED -> PARKING; disable ID13 torque while moving other
+  axes toward manufacturer-sourced park encoder goals
+  `[2047,1023,null,3071,2047,2047,2047]`; compute step goals from each
+  feedback sample with max +/−3 counts, require 10 consecutive stable
+  feedback cycles, re-enable ID13, then DISARMING -> DISARMED only after
+  seven torque-OFF readbacks. The reference pose is **not** calibrated
+  to the individual robot and must not be assumed safe.
+- `T=0`: bypasses park and requests torque-OFF immediately (can cause
+  a dangerous gravity drop); neither UART failure nor ERROR guarantees
+  physical servo torque-off.
+- T102/T1041 motion is deliberately rejected during this ON/OFF phase.
+  `T=211` reports state; T212/T213/T214 remain read-only.
+
+**Before enabling physical output:** these changes have not been built
+or tested by the assistant. Bench validation must include manufacturer
+speed/acceleration and goal register semantics, joint hard limits, ID12/13
+mechanical coupling, actual park trajectories and load support, timeout
+handling, power cut-off and incomplete torque-release recovery. A
+position-goal increment is not itself a safe mechanical-speed limit.
+If park or torque verification enters ERROR, treat torque as UNKNOWN.

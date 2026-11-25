@@ -479,3 +479,33 @@ POSITION mode EEPROM mismatch. The boot diagnosis now counts
 - Vendor PARK remains disabled until physical shoulder movement is
   validated. Do not use `T=210,cmd=0` as an alternative from
   BOOT_RECOVERY.
+
+
+## 2026-11-26: reboot while servo torque remains ON — revised diagnosis
+
+A real bench log still showed `INIT diagnosis complete: mismatches=7` and
+`INIT rejected: servo configuration mismatch` after restarting the ESP32
+with all servos energized. Source inspection confirmed that the 7
+`mismatches` corresponded to **operating-mode** readback mismatch,
+rather than the separate `init_torque_on_count_` counter. The prior
+INIT guard rejected the mode mismatch **before** checking retained
+torque, so it could not enter BOOT_RECOVERY.
+
+The new INIT decision prioritizes any confirmed retained torque
+(`init_torque_on_count_ > 0`) and enters `BOOT_RECOVERY` **even if
+mode mismatch diagnostics were also observed**. It still never
+silently changes servo EEPROM or torque state.
+
+With the robot physically supported, operator may use the explicit
+`{"T":215,"cmd":0}` to release torque. After all seven servo torque
+OFF readbacks succeed, firmware **restarts the INIT mode read-only
+verification**. If a real operating-mode mismatch remains with the
+torque OFF, it enters ERROR. Only a valid configuration can reach
+`DISARMED`. Logs now include `INIT torque ON count=` and a
+BOOT_RECOVERY message with both mismatch counts.
+
+Do not infer that operating-mode mismatch is caused by torque being
+ON: it is a separate observed result requiring the register-level
+logs to establish the cause. Before retrying PARK, confirm the
+complete `OPERATING_MODE actual/expected` results for all seven
+servos and do not change EEPROM in response to a mismatch.

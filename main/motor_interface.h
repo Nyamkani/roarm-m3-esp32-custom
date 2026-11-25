@@ -298,6 +298,12 @@ private:
     ParkPhase park_phase_ = ParkPhase::RELEASE_SHOULDER;
     bool park_busy_ = false;
     bool park_stop_pending_ = false;
+    MotorCommandFrame park_command_{};
+    bool park_command_initialized_ = false;
+    int64_t park_last_goal_us_ = 0;
+    static constexpr int64_t PARK_GOAL_PERIOD_US = 10000;
+    static constexpr int32_t PARK_MAX_TRACKING_ERROR = 160;
+    static constexpr int32_t PARK_SHOULDER_COUPLING_TOLERANCE = 64;
     int64_t park_start_us_ = 0;
     uint8_t park_stable_count_ = 0;
     static constexpr int64_t PARK_TIMEOUT_US = 15000000;

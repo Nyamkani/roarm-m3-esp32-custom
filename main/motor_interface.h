@@ -123,6 +123,7 @@ enum class MotorInterfaceState : uint8_t
     ARMED,
     PARKING,
     DISARMING,
+    BOOT_RECOVERY,
     ERROR
 };
 
@@ -207,6 +208,7 @@ private:
     size_t init_motor_index_ = 0;
 
     uint8_t init_mismatch_count_ = 0;
+    uint8_t init_torque_on_count_ = 0;
 
     void ProcessMotorInitialization();
 
@@ -276,6 +278,7 @@ private:
     void StateInit();
     void StateReady();
     void StateDisarmed();
+    void StateBootRecovery();
     void StateArming();
     void StateArmed();
     void StateParking();

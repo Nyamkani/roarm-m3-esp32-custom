@@ -466,6 +466,7 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             arm_index_ = 0;
             arm_busy_ = false;
             arm_stop_pending_ = false;
+            arm_start_us_ = esp_timer_get_time();
             torque_index_ = 0;
             torque_busy_ = false;
             break;
@@ -716,6 +717,18 @@ bool MotorInterface::PollArmPositionChecks()
 void MotorInterface::StateArming()
 {
 #if MOTOR_TORQUE_WRITE_ENABLE
+    if (esp_timer_get_time() - arm_start_us_ > ARM_TIMEOUT_US)
+    {
+        ESP_LOGE(TAG, "ARM timeout: torque may be partially enabled");
+        // If an existing parameter transaction is in flight, it is unsafe
+        // to hand UART1 to rollback while its response remains outstanding.
+        // Report ERROR rather than asserting a successful torque release.
+        if (arm_busy_ || torque_busy_)
+            EnterError();
+        else
+            ChangeState(MotorInterfaceState::DISARMING);
+        return;
+    }
     if (servo_request_.exchange(ServoRequest::NONE) == ServoRequest::OFF)
         arm_stop_pending_ = true;
 

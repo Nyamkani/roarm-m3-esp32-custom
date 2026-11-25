@@ -84,16 +84,46 @@ void HandleJsonLine(const char* json) {
             "\"state\":\"%s\","
             "\"feedback_valid\":%s,"
             "\"torque_write_enabled\":%s,"
-            "\"pwm_output_enabled\":%s}\n",
+            "\"pwm_output_enabled\":%s,"
+            "\"position_output_enabled\":%s,"
+            "\"control_mode\":\"%s\"}\n",
             MotorStateToString(state),
             feedback_valid ? "true" : "false",
             MOTOR_TORQUE_WRITE_ENABLE ? "true" : "false",
-            MOTOR_PWM_OUTPUT_ENABLE ? "true" : "false"
+            MOTOR_PWM_OUTPUT_ENABLE ? "true" : "false",
+            MOTOR_POSITION_OUTPUT_ENABLE ? "true" : "false",
+            MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION ? "POSITION" : "PWM"
         );
 
         return;
     }
 
+
+    // T=212: read-only POSITION hold preflight; no target publication.
+    if (cJSON_IsObject(root) &&
+        cJSON_IsNumber(type) &&
+        type->valuedouble == 212.0)
+    {
+        cJSON_Delete(root);
+        MotorCommandFrame hold{};
+        if (!motor_interface.PreparePositionHold(hold))
+        {
+            std::puts("{\"T\":212,\"ok\":false,\"error\":\"hold_preflight_failed\"}");
+            return;
+        }
+
+        std::printf(
+            "{\"T\":212,\"ok\":true,\"positions\":[%d,%d,%d,%d,%d,%d,%d]}\n",
+            static_cast<int>(hold.motors[0].target_position),
+            static_cast<int>(hold.motors[1].target_position),
+            static_cast<int>(hold.motors[2].target_position),
+            static_cast<int>(hold.motors[3].target_position),
+            static_cast<int>(hold.motors[4].target_position),
+            static_cast<int>(hold.motors[5].target_position),
+            static_cast<int>(hold.motors[6].target_position)
+        );
+        return;
+    }
 
     const bool feedback_requested =
         cJSON_IsObject(root) && cJSON_IsNumber(type) &&

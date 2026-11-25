@@ -480,6 +480,9 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             break;
         case MotorInterfaceState::PARKING:
             park_stop_pending_ = false;
+            park_command_ = {};
+            park_command_initialized_ = false;
+            park_last_goal_us_ = 0;
             output_inhibit_ = true;
             park_phase_ = ParkPhase::RELEASE_SHOULDER;
             park_start_us_ = esp_timer_get_time();
@@ -875,6 +878,33 @@ void MotorInterface::StateParking()
     }
     if (park_phase_ == ParkPhase::RELEASE_SHOULDER)
     {
+        // Verify all servos are fresh and the mechanically coupled shoulder
+        // agrees before releasing torque from driven motor ID13.
+        if (!park_command_initialized_)
+        {
+            SharedSnapshotFrame<MotorFeedbackFrame> feedback{};
+            if (!feedback_snapshot_.Read(feedback) ||
+                !ValidateFeedback(feedback.data, esp_timer_get_time()))
+            {
+                ESP_LOGE(TAG, "Park aborted: feedback invalid");
+                EnterError();
+                return;
+            }
+            const int32_t shoulder_sum =
+                static_cast<int32_t>(feedback.data.motors[1].position) +
+                static_cast<int32_t>(feedback.data.motors[2].position);
+            if (std::abs(shoulder_sum - 4094) >
+                PARK_SHOULDER_COUPLING_TOLERANCE)
+            {
+                ESP_LOGE(TAG, "Park aborted: shoulder coupling mismatch");
+                EnterError();
+                return;
+            }
+            for (size_t i = 0; i < MOTOR_COUNT; ++i)
+                park_command_.motors[i].target_position =
+                    feedback.data.motors[i].position;
+            park_command_initialized_ = true;
+        }
         if (PollParkShoulder(false))
         {
             park_phase_ = ParkPhase::MOVE;
@@ -1158,16 +1188,53 @@ void MotorInterface::CommProcess()
     // Initial hold and park targets are owned by the Servo FSM, not JSON.
     if (state_ == MotorInterfaceState::PARKING)
     {
-        cycle_command_ = {};
+        // Integrate goal from previous commanded position rather than from
+        // feedback. Otherwise a 3-count command can stall indefinitely.
+        if (!park_command_initialized_)
+        {
+            EnterError();
+            return;
+        }
+        const int32_t shoulder_sum =
+            static_cast<int32_t>(cycle_feedback_.motors[1].position) +
+            static_cast<int32_t>(cycle_feedback_.motors[2].position);
+        if (std::abs(shoulder_sum - 4094) >
+            PARK_SHOULDER_COUPLING_TOLERANCE)
+        {
+            ESP_LOGE(TAG, "Park aborted: coupled shoulder mismatch");
+            EnterError();
+            return;
+        }
         for (size_t i = 0; i < MOTOR_COUNT; ++i)
         {
-            const int32_t current = cycle_feedback_.motors[i].position;
-            const int32_t goal = PARK_GOALS[i] < 0 ? current : PARK_GOALS[i];
-            const int32_t step = std::clamp(
-                goal - current, -PARK_STEP_COUNTS, PARK_STEP_COUNTS);
-            cycle_command_.motors[i].target_position =
-                static_cast<int16_t>(current + step);
+            if (PARK_GOALS[i] < 0) continue;
+            const int32_t tracking_error =
+                static_cast<int32_t>(park_command_.motors[i].target_position) -
+                static_cast<int32_t>(cycle_feedback_.motors[i].position);
+            if (std::abs(tracking_error) > PARK_MAX_TRACKING_ERROR)
+            {
+                ESP_LOGE(TAG, "Park aborted: servo id=%u tracking error=%ld",
+                         static_cast<unsigned>(motors_[i].GetID()),
+                         static_cast<long>(tracking_error));
+                EnterError();
+                return;
+            }
         }
+        if (now_us - park_last_goal_us_ >= PARK_GOAL_PERIOD_US)
+        {
+            park_last_goal_us_ = now_us;
+            for (size_t i = 0; i < MOTOR_COUNT; ++i)
+            {
+                if (PARK_GOALS[i] < 0) continue; // ID13 released during park
+                const int32_t last = park_command_.motors[i].target_position;
+                const int32_t step = std::clamp(
+                    static_cast<int32_t>(PARK_GOALS[i]) - last,
+                    -PARK_STEP_COUNTS, PARK_STEP_COUNTS);
+                park_command_.motors[i].target_position =
+                    static_cast<int16_t>(last + step);
+            }
+        }
+        cycle_command_ = park_command_;
     }
     else cycle_command_ = hold_command_;
     command_valid_ = true;

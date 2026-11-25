@@ -291,6 +291,8 @@ private:
     size_t arm_index_ = 0;
     bool arm_busy_ = false;
     bool arm_stop_pending_ = false;
+    int64_t arm_start_us_ = 0;
+    static constexpr int64_t ARM_TIMEOUT_US = 5000000;
     MotorCommandFrame hold_command_{};
     enum class ParkPhase : uint8_t { RELEASE_SHOULDER, MOVE, RESTORE_SHOULDER };
     ParkPhase park_phase_ = ParkPhase::RELEASE_SHOULDER;

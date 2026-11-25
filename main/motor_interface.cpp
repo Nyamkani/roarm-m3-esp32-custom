@@ -448,6 +448,7 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             torque_off_verified_ = false;
             break;
         case MotorInterfaceState::DISARMED:
+            park_stop_pending_ = false;
             hold_command_ = {};
             output_inhibit_ = true;
             command_valid_ = false;
@@ -489,6 +490,7 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             park_phase_ = ParkPhase::RELEASE_SHOULDER;
             park_start_us_ = esp_timer_get_time();
             park_stable_count_ = 0;
+            park_stage_ = 0;
             park_busy_ = false;
             ChangeCommState(MotorCommState::IDLE);
             break;
@@ -786,6 +788,21 @@ void MotorInterface::StateArming()
 #endif
 }
 
+bool MotorInterface::IsParkStageServo(size_t index) const
+{
+    // Follow vendor order rather than sweeping all joints together:
+    // base + driving shoulder, then wrist, roll, elbow, gripper.
+    switch (park_stage_)
+    {
+        case 0: return index == 0 || index == 1;
+        case 1: return index == 4;
+        case 2: return index == 5;
+        case 3: return index == 3;
+        case 4: return index == 6;
+        default: return false;
+    }
+}
+
 bool MotorInterface::PollParkShoulder(bool enabled)
 {
     if (!park_busy_)
@@ -920,6 +937,12 @@ void MotorInterface::StateParking()
     {
         if (park_stable_count_ >= 10 && comm_state_ == MotorCommState::IDLE)
         {
+            park_stable_count_ = 0;
+            if (park_stage_ < 4)
+            {
+                ++park_stage_;
+                return;
+            }
             park_phase_ = ParkPhase::SET_SHOULDER_GOAL;
             park_goal_busy_ = false;
             return;
@@ -959,6 +982,31 @@ void MotorInterface::StateParking()
         const auto result = parameter_fsm_.Poll();
         if (result == ST3215ParameterFSM::Result::FAILED)
         {
+            EnterError();
+            return;
+        }
+        if (result == ST3215ParameterFSM::Result::SUCCESS)
+        {
+            park_goal_busy_ = false;
+            park_phase_ = ParkPhase::VERIFY_SHOULDER_GOAL;
+        }
+        return;
+    }
+    if (park_phase_ == ParkPhase::VERIFY_SHOULDER_GOAL)
+    {
+        if (!park_goal_busy_)
+        {
+            if (parameter_fsm_.VerifyPresentPosition(13, park_shoulder_hold_count_) != ESP_OK)
+            {
+                EnterError();
+                return;
+            }
+            park_goal_busy_ = true;
+        }
+        const auto result = parameter_fsm_.Poll();
+        if (result == ST3215ParameterFSM::Result::FAILED)
+        {
+            ESP_LOGE(TAG, "Park ID13 restore aborted: present pose drift");
             EnterError();
             return;
         }
@@ -1270,7 +1318,7 @@ void MotorInterface::CommProcess()
             park_last_goal_us_ = now_us;
             for (size_t i = 0; i < MOTOR_COUNT; ++i)
             {
-                if (PARK_GOALS[i] < 0) continue; // ID13 released during park
+                if (PARK_GOALS[i] < 0 || !IsParkStageServo(i)) continue; // vendor sequence
                 const int32_t last = park_command_.motors[i].target_position;
                 const int32_t step = std::clamp(
                     static_cast<int32_t>(PARK_GOALS[i]) - last,
@@ -1557,7 +1605,7 @@ void MotorInterface::CommComplete()
         bool stable = true;
         for (size_t i = 0; i < MOTOR_COUNT; ++i)
         {
-            if (PARK_GOALS[i] < 0) continue;
+            if (PARK_GOALS[i] < 0 || !IsParkStageServo(i)) continue;
             const int32_t diff = PARK_GOALS[i] - cycle_feedback_.motors[i].position;
             const int32_t vel = cycle_feedback_.motors[i].velocity;
             if (diff < -10 || diff > 10 || vel < -50 || vel > 50)

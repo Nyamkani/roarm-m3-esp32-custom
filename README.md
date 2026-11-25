@@ -220,3 +220,38 @@ POSITION torque or output until these are designed and tested.
 Previously observed sequential seven-servo feedback takes about 7.1 ms;
 the 5 ms transmit-cycle budget is insufficient for physical output and
 must be independently validated before enabling motion.
+
+## Manufacturer Servo ON/OFF comparison (read-only reference)
+
+The [Waveshare RoArm-M3-S JSON manual](https://www.waveshare.com/wiki/RoArm-M3-S_JSON_Command_Meaning)
+defines `T=210,cmd=0` as torque OFF and `cmd=1` as torque ON. Source
+inspection of the vendor example `uart_ctrl.h` and `RoArm-M3_module.h`
+(`servoTorqueCtrl(254,cmd)`) reveals an **important behavioral difference**:
+
+- ON (`cmd=1`): `EnableTorque(254,1)`.
+- OFF (`cmd=0`): `Move_to_location()` **first**, then
+  `EnableTorque(254,0)`. This is a **controlled park then release**,
+  not an immediate harmless torque switch.
+- During vendor park, driven shoulder ID 13 is temporarily torque-OFF
+  while driving shoulder ID 12 moves; ID 13 is then re-enabled.
+  A separate vendor boot `RoArmM3_moveInit()` can also perform
+  servo-center calibration: it must not be invoked as part of OFF.
+
+Reference factory park targets in encoder counts (ID 11 to 17):
+`[2047,1023,not-commanded,3071,2047,2047,2047]`.
+These are a **reference of this source version**, not approved safe
+targets for a specific arm, mechanical calibration or current pose.
+
+The new `{"T":214}` is a **read-only park preview** returning these
+reference values and the largest absolute encoder delta. `null`
+marks the driven shoulder ID 13, which receives no independent park
+position target in this routine. This preview **does not move the arm**,
+does not alter command snapshots and does not enable torque.
+
+Do **not** treat `T=0`, a communications watchdog stop, or ERROR as
+equivalent to a vendor park sequence. A park command requires verified
+power, feedback, mechanical limits, supported load, controlled trajectory,
+shoulder synchronization, and a deliberate stop-mode policy.
+
+Until those checks and partial-torque rollback are implemented, the
+compile-time POSITION output/torque lock remains in force.

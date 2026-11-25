@@ -50,6 +50,7 @@
 
 // 실물 POSITION 명령 출력은 별도로 허용
 #define MOTOR_POSITION_OUTPUT_ENABLE 0
+#define MOTOR_PHYSICAL_SERVO_ENABLE 0 // physical opt-in, default OFF
 
 #if MOTOR_CONTROL_MODE != MOTOR_CONTROL_PWM && \
     MOTOR_CONTROL_MODE != MOTOR_CONTROL_POSITION
@@ -62,7 +63,7 @@
 #endif
 
 static constexpr int64_t CONTROL_PERIOD_US = 10000;
-static constexpr int64_t CYCLE_BUDGET_US   = 5000;
+static constexpr int64_t CYCLE_BUDGET_US   = MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION ? 15000 : 5000;
 static constexpr int64_t RESPONSE_TIMEOUT_US = 2000;
 
 // Example IDs. Verify against actual RoArm-M3.
@@ -95,11 +96,10 @@ static constexpr uint8_t SERVO_IDS[MOTOR_COUNT] =
 #define MOTOR_INIT_TORQUE_LIMIT_ENABLE 0
 static constexpr uint16_t MOTOR_INIT_TORQUE_LIMIT = 1000;
 
-// Physical POSITION output remains locked until hold-on-ARM,
-// motion limits and partial-ARM rollback have been bench-verified.
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && \
-    (MOTOR_POSITION_OUTPUT_ENABLE || MOTOR_TORQUE_WRITE_ENABLE)
-#error "POSITION physical output locked: complete ARM safety validation first"
+    (MOTOR_POSITION_OUTPUT_ENABLE || MOTOR_TORQUE_WRITE_ENABLE) && \
+    (!MOTOR_PHYSICAL_SERVO_ENABLE || !MOTOR_TORQUE_WRITE_ENABLE || !MOTOR_POSITION_OUTPUT_ENABLE)
+#error "Enable all three POSITION physical Servo write gates explicitly"
 #endif
 
 enum class ServoReceiveStatus : uint8_t
@@ -118,6 +118,7 @@ enum class MotorInterfaceState : uint8_t
     DISARMED,
     ARMING,
     ARMED,
+    PARKING,
     DISARMING,
     ERROR
 };
@@ -169,6 +170,7 @@ public:
     ST3215* GetMotor(size_t index);
     void RequestServoOn();
     void RequestServoOff();
+    void RequestServoPark();
     MotorInterfaceState GetState() const { return state_public_.load(); }
 
 private:
@@ -242,7 +244,7 @@ private:
     MotorInterfaceState state_ =
         MotorInterfaceState::INIT;
     std::atomic<MotorInterfaceState> state_public_{MotorInterfaceState::INIT};
-    enum class ServoRequest : uint8_t { NONE, ON, OFF };
+    enum class ServoRequest : uint8_t { NONE, ON, OFF, PARK };
     std::atomic<ServoRequest> servo_request_{ServoRequest::NONE};
 
     MotorCommState comm_state_ =
@@ -272,12 +274,29 @@ private:
     void StateDisarmed();
     void StateArming();
     void StateArmed();
+    void StateParking();
     void StateDisarming();
     void StateError();
     bool PollTorque(bool enabled, bool verify_only);
     size_t torque_index_ = 0;
     bool torque_busy_ = false;
     bool torque_off_verified_ = false;
+    enum class ArmPhase : uint8_t { WRITE_HOLD, VERIFY_HOLD, VERIFY_POSE, TORQUE };
+    ArmPhase arm_phase_ = ArmPhase::WRITE_HOLD;
+    size_t arm_index_ = 0;
+    bool arm_busy_ = false;
+    MotorCommandFrame hold_command_{};
+    enum class ParkPhase : uint8_t { RELEASE_SHOULDER, MOVE, RESTORE_SHOULDER };
+    ParkPhase park_phase_ = ParkPhase::RELEASE_SHOULDER;
+    bool park_busy_ = false;
+    int64_t park_start_us_ = 0;
+    uint8_t park_stable_count_ = 0;
+    static constexpr int64_t PARK_TIMEOUT_US = 15000000;
+    static constexpr int32_t PARK_STEP_COUNTS = 3;
+    static constexpr int16_t PARK_GOALS[MOTOR_COUNT] =
+        {2047, 1023, -1, 3071, 2047, 2047, 2047};
+    bool PollArmPositionChecks();
+    bool PollParkShoulder(bool enabled);
 
     void CommIdle();
     void CommSendRequest();

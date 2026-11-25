@@ -209,6 +209,7 @@ private:
 
     uint8_t init_mismatch_count_ = 0;
     uint8_t init_torque_on_count_ = 0;
+    bool boot_recheck_mode_after_off_ = false;
 
     void ProcessMotorInitialization();
 

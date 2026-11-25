@@ -441,6 +441,7 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             ResetPID();
             break;
         case MotorInterfaceState::READY:
+            torque_off_public_.store(false);
             output_inhibit_ = true;
             torque_index_ = 0;
             torque_busy_ = false;
@@ -457,6 +458,8 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             last_comm_cycle_us_ = 0;
             break;
         case MotorInterfaceState::ARMING:
+            torque_off_verified_ = false;
+            torque_off_public_.store(false);
             output_inhibit_ = true;
             ResetPID();
             arm_phase_ = ArmPhase::WRITE_HOLD;
@@ -474,6 +477,7 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             last_comm_cycle_us_ = 0;
             break;
         case MotorInterfaceState::PARKING:
+            park_stop_pending_ = false;
             output_inhibit_ = true;
             park_phase_ = ParkPhase::RELEASE_SHOULDER;
             park_start_us_ = esp_timer_get_time();
@@ -482,12 +486,15 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             ChangeCommState(MotorCommState::IDLE);
             break;
         case MotorInterfaceState::DISARMING:
+            torque_off_verified_ = false;
+            torque_off_public_.store(false);
             output_inhibit_ = true;
             ResetPID();
             torque_index_ = 0;
             torque_busy_ = false;
             break;
         case MotorInterfaceState::ERROR:
+            torque_off_public_.store(false);
             output_inhibit_ = true;
             torque_off_verified_ = false;
             command_valid_ = false;
@@ -624,6 +631,7 @@ void MotorInterface::StateReady()
     if (PollTorque(false, true))
     {
         torque_off_verified_ = true;
+        torque_off_public_.store(true);
         ChangeState(MotorInterfaceState::DISARMED);
     }
 }
@@ -731,6 +739,7 @@ void MotorInterface::StateArming()
     if (PollTorque(true, false))
     {
         torque_off_verified_ = false;
+        torque_off_public_.store(false);
         ESP_LOGI(TAG, "Servo ON verified (all 7)");
         ChangeState(MotorInterfaceState::ARMED);
     }
@@ -777,7 +786,11 @@ void MotorInterface::StateArmed()
         if (request == ServoRequest::PARK)
         {
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+#if MOTOR_VENDOR_SHOULDER_PARK_ENABLE
             ChangeState(MotorInterfaceState::PARKING);
+#else
+            ESP_LOGW(TAG, "Park rejected: manufacturer shoulder-release path not validated");
+#endif
 #else
             ChangeState(MotorInterfaceState::DISARMING);
 #endif
@@ -790,9 +803,34 @@ void MotorInterface::StateArmed()
 
 void MotorInterface::StateParking()
 {
-#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_TORQUE_WRITE_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_TORQUE_WRITE_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE && MOTOR_VENDOR_SHOULDER_PARK_ENABLE
     if (servo_request_.exchange(ServoRequest::NONE) == ServoRequest::OFF)
+        park_stop_pending_ = true;
+
+    if (park_stop_pending_)
     {
+        // Do not interrupt a parameter transaction or hand UART to another
+        // state while a reply may be in flight.
+        output_inhibit_ = true;
+        if (park_busy_)
+        {
+            const auto result = parameter_fsm_.Poll();
+            if (result == ST3215ParameterFSM::Result::FAILED)
+            {
+                EnterError();
+                return;
+            }
+            if (result != ST3215ParameterFSM::Result::SUCCESS)
+                return;
+            park_busy_ = false;
+        }
+        if (comm_state_ != MotorCommState::IDLE)
+        {
+            UpdateCommunicationError();
+            ProcessCommunicationFSM();
+            return;
+        }
+        ESP_LOGW(TAG, "Park interrupted: request torque OFF");
         ChangeState(MotorInterfaceState::DISARMING);
         return;
     }
@@ -838,6 +876,7 @@ void MotorInterface::StateDisarming()
     if (PollTorque(false, false))
     {
         torque_off_verified_ = true;
+        torque_off_public_.store(true);
         ChangeState(MotorInterfaceState::DISARMED);
     }
 #else
@@ -1314,7 +1353,7 @@ void MotorInterface::CommSyncWrite()
     if (!output_enabled ||
         (state_ != MotorInterfaceState::ARMED &&
          state_ != MotorInterfaceState::PARKING) ||
-        servo_request_.load() == ServoRequest::OFF ||
+        (servo_request_.load() == ServoRequest::OFF || park_stop_pending_) ||
         !command_valid_ ||
         output_inhibit_)
     {

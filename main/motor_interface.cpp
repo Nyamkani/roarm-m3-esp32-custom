@@ -421,6 +421,25 @@ void MotorInterface::ChangeState(MotorInterfaceState next)
     if (state_ == next)
         return;
 
+    // Publish a separate operation result without changing motor behavior.
+    // PARK completes only after DISARMING verifies all servo torque is OFF.
+    const auto operation = GetOperationSnapshot();
+    if (next == MotorInterfaceState::PARKING)
+        SetOperationSnapshot(MotorOperation::PARK, MotorOperationStatus::RUNNING);
+    else if (state_ == MotorInterfaceState::PARKING &&
+             next == MotorInterfaceState::DISARMING && park_stop_pending_)
+        SetOperationSnapshot(MotorOperation::PARK, MotorOperationStatus::INTERRUPTED);
+    else if (state_ == MotorInterfaceState::DISARMING &&
+             next == MotorInterfaceState::DISARMED &&
+             operation.operation == MotorOperation::PARK &&
+             operation.status == MotorOperationStatus::RUNNING)
+        SetOperationSnapshot(MotorOperation::PARK, MotorOperationStatus::COMPLETED);
+    else if (next == MotorInterfaceState::ERROR &&
+             operation.operation == MotorOperation::PARK &&
+             (operation.status == MotorOperationStatus::RUNNING ||
+              operation.status == MotorOperationStatus::INTERRUPTED))
+        SetOperationSnapshot(MotorOperation::PARK, MotorOperationStatus::FAILED);
+
     ExitState(state_);
     state_ = next;
     state_public_.store(next);

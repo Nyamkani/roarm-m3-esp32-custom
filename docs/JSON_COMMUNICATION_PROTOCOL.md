@@ -2,7 +2,7 @@
 
 > **기준 브랜치:** `feature/motion-operation-status` (2026-11-26)
 >
-> **상태:** 현재 소스 코드에서 확인된 명령과 응답을 기술합니다. 예시 응답의 위치/상태 값은 설명용이며 실제 측정값이 아닙니다. **Home / Pause / Resume / Protective Stop / Calibration은 미구현이며 명령 번호도 배정하지 않았습니다.**
+> **상태:** 현재 소스 코드에서 확인된 명령과 응답을 기술합니다. 예시 응답의 위치/상태 값은 설명용이며 실제 측정값이 아닙니다. **Home은 T=217로 구현되어 있으나 기본 비활성화(실기 미검증) 상태입니다. Pause / Resume / Protective Stop / Calibration은 미구현이며 명령 번호도 배정하지 않았습니다.**
 
 ## 1. Transport and message framing
 
@@ -52,6 +52,8 @@ ESP32 -> HOST: {"T":211, ... }\n
 | 213 | `{"T":213}` | Servo ON 정지 상태 사전 확인 (dry-run) | `{"T":213,"ok":true,"dry_run":true,"torque_write_enabled":false,"positions":[...]}` 또는 `arm_preview_failed` | **DISARMED**; 읽기 전용, 실제 ON 아님 |
 | 214 | `{"T":214}` | Parking 목표 미리보기 (dry-run) | `{"T":214,"ok":true,"dry_run":true,"torque_write_enabled":false,"park_goals":[...],"max_delta_counts":...}` 또는 `park_preview_failed` | **DISARMED**; 실제 Parking 실행 아님 |
 | 215 | `{"T":215,"cmd":0}` | 명시적인 **무Parking Servo OFF** 요청(벤치/복구) | 일반 `accepted` / `motor_unavailable` | **ARMED / ARMING / BOOT_RECOVERY** 및 POSITION·Torque write 빌드 조건 필요 |
+| 216 | `{"T":216}` | Home 미리보기 (read-only) | `T=216, dry_run=true` / `home_preflight_failed` | **ARMED**, 정상 결합·정지 피드백 필요 |
+| 217 | `{"T":217,"cmd":1}` | Home 이동 요청 (**기본 비활성화**) | 기본 `motor_unavailable`; 실기 게이트 허용 시 `accepted` | **MOTOR_HOME_EXECUTION_ENABLE=0** 기본; 실기 미검증 |
 | 102 | `{"T":102,"base":0,"shoulder":0,"elbow":0,"wrist":0,"roll":0,"hand":0}` | 6관절 목표(rad) | **현재 POSITION 빌드에서는** `motor_unavailable` | **미활성화**: 소스에 형식·유효성 검사 구현은 존재 |
 | 1041 | `{"T":1041,"x":0,"y":0,"z":0,"t":0,"r":0,"g":0}` | Cartesian 목표(mm/rad) | **현재 POSITION 빌드에서는** `motor_unavailable` | **미활성화**: IK/형식 검사 코드는 존재 |
 
@@ -304,7 +306,17 @@ RECV {"T":211,"state":"DISARMED","operation":"PARK","operation_status":"COMPLETE
 
 위 예시는 **전이 흐름**이며 샘플링 순간에 ARMING/PARKING 중간 상태가 반드시 보이는 것은 아닙니다. `T=210 cmd=0`을 사용하려면 빌드에서 Parking 활성화 및 적절한 실기 안전 검증이 필요합니다.
 
-## 10. Future protocol (NOT IMPLEMENTED)
+## 10. Experimental Homing command and future protocol
+
+### T=217 — Home action (implemented but **disabled by default**)
+
+**SEND**: `{"T":217,"cmd":1}`
+
+**RECV with default configuration**: `{"ok":false,"status":"motor_unavailable"}`
+
+To avoid unexpected motor motion, `MOTOR_HOME_EXECUTION_ENABLE` defaults to **0**. If intentionally enabled for separately supervised firmware validation, `ARMED` plus valid Home preflight are required, then `accepted` signifies asynchronous admission only. A subsequent `T=211` can show `HOMING/HOME/RUNNING` and, on successful completion, `ARMED/HOME/COMPLETED`. **Do not enable without a physical support plan and error-recovery review.**
+
+### Planned features (NOT IMPLEMENTED)
 
 아래 기능은 **설계 예정**이며 **JSON 명령 번호와 페이로드를 아직 확정하지 않았습니다**.
 

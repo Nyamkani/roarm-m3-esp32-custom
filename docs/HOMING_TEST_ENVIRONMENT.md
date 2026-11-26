@@ -94,6 +94,10 @@ Only use established physical test procedure (not this script). Check `T=211`:
 
 `feedback_valid=false` after Parking is a known separate joint-mapping question, not automatically a transport failure. Collect raw servo feedback for diagnosis later. `T=214` preview currently uses elbow target 3071 while actual Parking uses 3039; do not use preview as a physical goal truth.
 
+## Read-only Home phase status checks
+
+On a fresh boot (with HOME execution gate 0), `T=211` should contain `"home_phase":"NOT_STARTED","home_phase_code":0`. The read-only smoke script checks this pair when no HOME operation has run. The script does not invoke physical Home. With a later explicitly enabled Home build, phase diagnostics are intended for operator observation only.
+
 ## 6. PASS criteria and unresolved limitations
 
 - PASS build/link: ESP-IDF build succeeds for the exact tested branch.

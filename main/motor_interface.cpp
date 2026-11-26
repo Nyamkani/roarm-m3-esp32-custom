@@ -588,6 +588,7 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             home_command_ = {};
             home_command_initialized_ = false;
             home_busy_ = false;
+            park_busy_ = false; // PollParkShoulder transaction helper
             home_stop_pending_ = false;
             home_stage_ = 0;
             home_stable_count_ = 0;
@@ -1194,6 +1195,211 @@ void MotorInterface::StateParking()
 #endif
 }
 
+bool MotorInterface::IsHomeStageServo(size_t index) const
+{
+    if (home_phase_ == HomePhase::MOVE_BASE) return index == 0;
+    if (home_phase_ == HomePhase::MOVE_SHOULDER) return index == 1;
+    if (home_phase_ == HomePhase::MOVE_REST)
+    {
+        // Elbow, wrist, roll, gripper in conservative one-at-a-time order.
+        switch (home_stage_)
+        {
+            case 0: return index == 3;
+            case 1: return index == 4;
+            case 2: return index == 5;
+            case 3: return index == 6;
+            default: return false;
+        }
+    }
+    return false;
+}
+
+void MotorInterface::StateHoming()
+{
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_HOME_EXECUTION_ENABLE && MOTOR_TORQUE_WRITE_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE
+    if (servo_request_.exchange(ServoRequest::NONE) == ServoRequest::OFF)
+        home_stop_pending_ = true;
+
+    if (home_stop_pending_)
+    {
+        output_inhibit_ = true;
+        // Finish any parameter transaction before changing UART ownership.
+        if (home_busy_ || park_busy_)
+        {
+            const auto result = parameter_fsm_.Poll();
+            if (result == ST3215ParameterFSM::Result::BUSY) return;
+            if (result == ST3215ParameterFSM::Result::FAILED)
+            { EnterError(); return; }
+            home_busy_ = false;
+            park_busy_ = false;
+        }
+        if (comm_state_ != MotorCommState::IDLE)
+        {
+            UpdateCommunicationError();
+            ProcessCommunicationFSM();
+            return;
+        }
+        ESP_LOGW(TAG, "HOME interrupted by explicit no-park Servo OFF request");
+        ChangeState(MotorInterfaceState::DISARMING);
+        return;
+    }
+
+    if (esp_timer_get_time() - home_start_us_ > HOME_TIMEOUT_US)
+    {
+        ESP_LOGE(TAG, "HOME timeout; servo states may be partially enabled");
+        EnterError();
+        return;
+    }
+
+    if (home_phase_ == HomePhase::PREPARE)
+    {
+        SharedSnapshotFrame<MotorFeedbackFrame> snapshot{};
+        if (!feedback_snapshot_.Read(snapshot) ||
+            !ValidateFeedback(snapshot.data, esp_timer_get_time()))
+        { EnterError(); return; }
+        int32_t shoulder_sum = 0;
+        for (size_t i = 0; i < MOTOR_COUNT; ++i)
+        {
+            const int32_t pos = snapshot.data.motors[i].position;
+            const int32_t vel = snapshot.data.motors[i].velocity;
+            if (pos < 0 || pos > 4095 || std::abs(vel) > 50)
+            { EnterError(); return; }
+            home_command_.motors[i].target_position = static_cast<int16_t>(pos);
+            if (i == 1 || i == 2) shoulder_sum += pos;
+        }
+        if (std::abs(shoulder_sum - 4094) > PARK_SHOULDER_COUPLING_TOLERANCE)
+        { EnterError(); return; }
+        home_command_initialized_ = true;
+        home_phase_ = HomePhase::MOVE_BASE;
+        return;
+    }
+
+    if (home_phase_ == HomePhase::MOVE_BASE ||
+        home_phase_ == HomePhase::MOVE_SHOULDER ||
+        home_phase_ == HomePhase::MOVE_REST)
+    {
+        if (home_stable_count_ >= 10 && comm_state_ == MotorCommState::IDLE)
+        {
+            home_stable_count_ = 0;
+            if (home_phase_ == HomePhase::MOVE_BASE)
+                home_phase_ = HomePhase::RELEASE_SHOULDER;
+            else if (home_phase_ == HomePhase::MOVE_SHOULDER)
+                home_phase_ = HomePhase::SET_SHOULDER_GOAL;
+            else if (home_stage_ < 3)
+                ++home_stage_;
+            else
+            {
+                // Do not send the pre-Home hold positions when re-entering
+                // ARMED. Capture the actual final pose as the new hold.
+                SharedSnapshotFrame<MotorFeedbackFrame> snapshot{};
+                if (!feedback_snapshot_.Read(snapshot) ||
+                    !ValidateFeedback(snapshot.data, esp_timer_get_time()))
+                { EnterError(); return; }
+                int32_t sum = snapshot.data.motors[1].position +
+                    snapshot.data.motors[2].position;
+                if (std::abs(sum - 4094) > PARK_SHOULDER_COUPLING_TOLERANCE)
+                { EnterError(); return; }
+                for (size_t i = 0; i < MOTOR_COUNT; ++i)
+                {
+                    const int32_t pos = snapshot.data.motors[i].position;
+                    if (pos < 0 || pos > 4095) { EnterError(); return; }
+                    hold_command_.motors[i].target_position =
+                        static_cast<int16_t>(pos);
+                }
+                ESP_LOGI(TAG, "HOME completed; new current pose captured for hold");
+                ChangeState(MotorInterfaceState::ARMED);
+            }
+            return;
+        }
+        UpdateCommunicationError();
+        ProcessCommunicationFSM();
+        return;
+    }
+
+    if (home_phase_ == HomePhase::RELEASE_SHOULDER)
+    {
+        if (PollParkShoulder(false))
+        {
+            home_phase_ = HomePhase::MOVE_SHOULDER;
+            ChangeCommState(MotorCommState::IDLE);
+            last_comm_cycle_us_ = 0;
+        }
+        return;
+    }
+
+    // ID13 is passive while ID12 moves. Synchronize its GOAL to PRESENT
+    // before re-enabling Servo ON, without any EEPROM zero-offset write.
+    if (home_phase_ == HomePhase::SET_SHOULDER_GOAL)
+    {
+        if (!home_busy_)
+        {
+            SharedSnapshotFrame<MotorFeedbackFrame> snapshot{};
+            if (!feedback_snapshot_.Read(snapshot) ||
+                !ValidateFeedback(snapshot.data, esp_timer_get_time()))
+            { EnterError(); return; }
+            const int32_t id12 = snapshot.data.motors[1].position;
+            const int32_t id13 = snapshot.data.motors[2].position;
+            if (std::abs(id12 + id13 - 4094) > PARK_SHOULDER_COUPLING_TOLERANCE ||
+                std::abs(id12 - 2047) > 10 || std::abs(snapshot.data.motors[2].velocity) > 50 ||
+                id13 < 0 || id13 > 4095)
+            { EnterError(); return; }
+            home_shoulder_goal_ = static_cast<uint16_t>(id13);
+            home_command_.motors[2].target_position = static_cast<int16_t>(id13);
+            if (parameter_fsm_.SetGoalPosition(13, home_shoulder_goal_) != ESP_OK)
+            { EnterError(); return; }
+            home_busy_ = true;
+        }
+        const auto result = parameter_fsm_.Poll();
+        if (result == ST3215ParameterFSM::Result::FAILED) { EnterError(); return; }
+        if (result == ST3215ParameterFSM::Result::SUCCESS)
+        {
+            home_busy_ = false;
+            home_phase_ = HomePhase::VERIFY_SHOULDER_GOAL;
+        }
+        return;
+    }
+
+    if (home_phase_ == HomePhase::VERIFY_SHOULDER_GOAL ||
+        home_phase_ == HomePhase::VERIFY_SHOULDER_POSITION)
+    {
+        if (!home_busy_)
+        {
+            const esp_err_t err = home_phase_ == HomePhase::VERIFY_SHOULDER_GOAL ?
+                parameter_fsm_.VerifyGoalPosition(13, home_shoulder_goal_) :
+                parameter_fsm_.VerifyPresentPosition(13, home_shoulder_goal_);
+            if (err != ESP_OK) { EnterError(); return; }
+            home_busy_ = true;
+        }
+        const auto result = parameter_fsm_.Poll();
+        if (result == ST3215ParameterFSM::Result::FAILED) { EnterError(); return; }
+        if (result == ST3215ParameterFSM::Result::SUCCESS)
+        {
+            home_busy_ = false;
+            home_phase_ = home_phase_ == HomePhase::VERIFY_SHOULDER_GOAL ?
+                HomePhase::VERIFY_SHOULDER_POSITION : HomePhase::RESTORE_SHOULDER;
+        }
+        return;
+    }
+
+    if (home_phase_ == HomePhase::RESTORE_SHOULDER)
+    {
+        if (PollParkShoulder(true))
+        {
+            home_stage_ = 0;
+            home_stable_count_ = 0;
+            home_phase_ = HomePhase::MOVE_REST;
+            ChangeCommState(MotorCommState::IDLE);
+            last_comm_cycle_us_ = 0;
+        }
+        return;
+    }
+
+    EnterError();
+#else
+    EnterError();
+#endif
+}
+
 void MotorInterface::StateDisarming()
 {
 #if MOTOR_TORQUE_WRITE_ENABLE
@@ -1708,8 +1914,7 @@ esp_err_t MotorInterface::SendSyncPosition(
         if (((state_ == MotorInterfaceState::PARKING &&
             park_phase_ == ParkPhase::MOVE) ||
             (state_ == MotorInterfaceState::HOMING &&
-            (home_phase_ == HomePhase::MOVE_SHOULDER ||
-             home_phase_ == HomePhase::MOVE_REST))) &&
+            home_phase_ == HomePhase::MOVE_SHOULDER)) &&
             motors_[i].GetID() == 13)
             continue;
 

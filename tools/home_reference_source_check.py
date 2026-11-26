@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-only regression check: HOME raw pose differs from PARK and full HOME stays gated.
+"""Host-only regression check: HOME raw pose differs from PARK and FULL HOME requires supervised PARK-only start.
 
 No serial port, MCU, motors, or firmware output involved.
 Run from repository root: python3 tools/home_reference_source_check.py
@@ -27,12 +27,16 @@ assert park != goals, "PARK and HOME targets must differ"
 assert reference[1] + reference[2] == 4089
 assert abs(reference[1] + reference[2] - 4094) <= 64
 for macro in ("MOTOR_HOME_ALLOW_FULL_EXECUTION", "MOTOR_VENDOR_SHOULDER_PARK_ENABLE"):
-    assert re.search(r"#define\s+" + macro + r"\s+0\b", header), f"{macro} must be OFF"
+    assert re.search(r"#define\s+" + macro + r"\s+1\b", header), f"{macro} must be ON for supervised test"
+assert "HOME_PARK_START_TOLERANCE" in header
+assert "HOME_SHOULDER_CORRIDOR_MARGIN" in header
+assert "FULL HOME blocked: not at PARK" in source
+assert "HOME shoulder raw corridor exceeded" in source
 assert "HOME_GOALS[i]" in source, "preview and execution must use shared goals"
 assert "std::abs(id12 - HOME_REFERENCE_RAW[1]) > 10" in source
 assert "std::abs(id13 - HOME_REFERENCE_RAW[2]) > HOME_ID13_REFERENCE_TOLERANCE" in source
 assert "std::abs(pos - HOME_REFERENCE_RAW[i]) > allowed_error" in source
 print("PASS: seven-servo HOME reference matches user-confirmed Raw Encoder values")
 print("PASS: ID13 is passive during shoulder motion; checked before re-enable and final completion")
-print("PASS: vendor PARK is separate; full HOME and PARK execution gates remain OFF")
+print("PASS: supervised PARK and FULL HOME enabled with PARK-only pose and shoulder corridor interlocks")
 print("NOTE: source regression check only, not compilation or physical safety validation")

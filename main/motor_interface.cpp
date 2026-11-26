@@ -598,6 +598,9 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             home_start_us_ = esp_timer_get_time();
             home_shoulder_settle_us_ = 0;
             home_last_goal_us_ = 0;
+            home_watchdog_phase_ = HomePhase::PREPARE;
+            home_watchdog_stage_ = 0;
+            home_watchdog_start_us_ = home_start_us_;
             output_inhibit_ = true;
             ChangeCommState(MotorCommState::IDLE);
             break;
@@ -1251,9 +1254,31 @@ void MotorInterface::StateHoming()
         return;
     }
 
-    if (esp_timer_get_time() - home_start_us_ > HOME_TIMEOUT_US)
+    const int64_t home_now_us = esp_timer_get_time();
+    // Watchdog follows the actual stage (including individual MOVE_REST joints).
+    // The first iteration after a transition starts a fresh stage budget.
+    if (home_watchdog_phase_ != home_phase_ ||
+        home_watchdog_stage_ != home_stage_)
     {
-        ESP_LOGE(TAG, "HOME timeout; ID13 last-verified=%u (not live); servo states may be partially enabled",
+        home_watchdog_phase_ = home_phase_;
+        home_watchdog_stage_ = home_stage_;
+        home_watchdog_start_us_ = home_now_us;
+    }
+
+    const bool home_move_stage =
+        home_phase_ == HomePhase::MOVE_BASE ||
+        home_phase_ == HomePhase::MOVE_SHOULDER ||
+        home_phase_ == HomePhase::MOVE_REST;
+    const int64_t home_stage_limit_us =
+        home_move_stage ? HOME_MOVE_STAGE_TIMEOUT_US :
+        (home_phase_ == HomePhase::SETTLE_SHOULDER ?
+            HOME_SETTLE_TIMEOUT_US : HOME_PARAMETER_TIMEOUT_US);
+    if (home_now_us - home_start_us_ > HOME_MAX_TOTAL_US ||
+        home_now_us - home_watchdog_start_us_ > home_stage_limit_us)
+    {
+        ESP_LOGE(TAG, "HOME timeout phase=%u stage=%u ID13 last-verified=%u (not live); servo torque unknown",
+            static_cast<unsigned>(home_phase_),
+            static_cast<unsigned>(home_stage_),
             static_cast<unsigned>(home_id13_verified_.load()));
         EnterError();
         return;

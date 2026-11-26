@@ -231,6 +231,32 @@ void HandleJsonLine(const char* json) {
         return;
     }
 
+    // T=216: Home preview (read-only). Actual Homing FSM is not enabled.
+    if (cJSON_IsObject(root) &&
+        cJSON_IsNumber(type) &&
+        type->valuedouble == 216.0)
+    {
+        cJSON_Delete(root);
+        MotorCommandFrame home{};
+        if (!motor_interface.PreviewPositionHome(home))
+        {
+            std::puts("{\"T\":216,\"ok\":false,\"error\":\"home_preflight_failed\"}");
+            return;
+        }
+        std::printf(
+            "{\"T\":216,\"ok\":true,\"dry_run\":true,"
+            "\"servo_write_enabled\":false,"
+            "\"calibration_enabled\":false,"
+            "\"home_goals\":[%d,%d,null,%d,%d,%d,%d]}\n",
+            static_cast<int>(home.motors[0].target_position),
+            static_cast<int>(home.motors[1].target_position),
+            static_cast<int>(home.motors[3].target_position),
+            static_cast<int>(home.motors[4].target_position),
+            static_cast<int>(home.motors[5].target_position),
+            static_cast<int>(home.motors[6].target_position));
+        return;
+    }
+
     const bool feedback_requested =
         cJSON_IsObject(root) && cJSON_IsNumber(type) &&
         type->valuedouble == 105.0;

@@ -17,6 +17,7 @@
 #include "st3215_parameter_fsm.h"
 #include "pid.h"
 #include "joint_mapper.h"
+#include "calibration_data.h"
 
 
 #include "gpio_config.h"
@@ -202,6 +203,11 @@ public:
     // Until a mechanical reference/offset has actually been verified,
     // this stays false. Neither HOME nor PARK is calibration.
     bool IsCalibrationValid() const { return calibration_valid_.load(); }
+    uint32_t GetCalibrationSchemaVersion() const { return arm_calibration::kSchemaVersion; }
+    bool HasVerifiedCalibrationRecord() const {
+        return calibration_data_.mechanical_reference_verified &&
+               arm_calibration::IsStructurallyValid(calibration_data_);
+    }
     bool CanExecuteMove() const {
         return GetState() == MotorInterfaceState::ARMED &&
                IsInitializationComplete() && IsCalibrationValid();
@@ -295,6 +301,8 @@ private:
     // Fail-closed across reboot. Do not set true until calibration exists.
     std::atomic<bool> initialization_complete_{false};
     std::atomic<bool> calibration_valid_{false};
+    // No trusted calibration input path or persistence yet. Starts empty.
+    const arm_calibration::CalibrationData calibration_data_{};
     enum class ServoRequest : uint8_t { NONE, ON, OFF, PARK, HOME };
     std::atomic<ServoRequest> servo_request_{ServoRequest::NONE};
     std::atomic<uint16_t> operation_snapshot_{0}; // operation in low byte, status in high byte

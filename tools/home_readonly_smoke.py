@@ -51,6 +51,9 @@ def check(status, preview, expected):
         raise AssertionError(f"Unexpected servo state: {status.get('state')}")
     if "operation_status" not in status or "home_id13_last_verified" not in status:
         raise AssertionError("Required status fields missing (wrong firmware branch?)")
+    if status.get("home_phase") != "NOT_STARTED" or status.get("home_phase_code") != 0:
+        if status.get("operation") != "HOME":
+            raise AssertionError("Unexpected Home phase without Home operation")
     state = status["state"]
     if expected and state != expected:
         raise AssertionError(f"Expected {expected}, got {state}")

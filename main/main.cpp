@@ -55,6 +55,25 @@ const char* MotorStateToString(MotorInterfaceState state)
     }
 }
 
+const char* OperationToString(MotorOperation operation) {
+    switch (operation) {
+        case MotorOperation::NONE: return "NONE";
+        case MotorOperation::PARK: return "PARK";
+        default: return "UNKNOWN";
+    }
+}
+
+const char* OperationStatusToString(MotorOperationStatus status) {
+    switch (status) {
+        case MotorOperationStatus::IDLE: return "IDLE";
+        case MotorOperationStatus::RUNNING: return "RUNNING";
+        case MotorOperationStatus::COMPLETED: return "COMPLETED";
+        case MotorOperationStatus::INTERRUPTED: return "INTERRUPTED";
+        case MotorOperationStatus::FAILED: return "FAILED";
+        default: return "UNKNOWN";
+    }
+}
+
 void HandleJsonLine(const char* json) {
     // Feedback request is a receive-side operation. Do not send it through
     // HandleJsonCommand(), which handles motion and stop commands only.
@@ -77,6 +96,12 @@ void HandleJsonLine(const char* json) {
         const MotorInterfaceState state =
             motor_interface.GetState();
 
+        const MotorOperationSnapshot operation = motor_interface.GetOperationSnapshot();
+        const char* motion_state =
+            state == MotorInterfaceState::PARKING ? "PARKING" :
+            state == MotorInterfaceState::DISARMING ? "STOPPING" :
+            (state == MotorInterfaceState::ARMED || state == MotorInterfaceState::DISARMED) ? "IDLE" : "UNAVAILABLE";
+
         JointAngles feedback{};
         const bool feedback_valid =
             motor_interface.GetJointFeedback(feedback);
@@ -84,6 +109,9 @@ void HandleJsonLine(const char* json) {
         std::printf(
             "{\"T\":211,"
             "\"state\":\"%s\","
+            "\"motion_state\":\"%s\","
+            "\"operation\":\"%s\","
+            "\"operation_status\":\"%s\","
             "\"feedback_valid\":%s,"
             "\"torque_write_enabled\":%s,"
             "\"pwm_output_enabled\":%s,"
@@ -93,6 +121,9 @@ void HandleJsonLine(const char* json) {
             "\"vendor_park_enabled\":%s,"
             "\"control_mode\":\"%s\"}\n",
             MotorStateToString(state),
+            motion_state,
+            OperationToString(operation.operation),
+            OperationStatusToString(operation.status),
             feedback_valid ? "true" : "false",
             MOTOR_TORQUE_WRITE_ENABLE ? "true" : "false",
             MOTOR_PWM_OUTPUT_ENABLE ? "true" : "false",

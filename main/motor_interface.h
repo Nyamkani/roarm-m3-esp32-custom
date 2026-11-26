@@ -193,6 +193,9 @@ public:
     // Not a real-time torque sensor; UNKNOWN if no confirmation exists.
     enum class HomeId13Verified : uint8_t { UNKNOWN, OFF, ON };
     HomeId13Verified GetHomeId13LastVerified() const { return home_id13_verified_.load(); }
+    // Read-only, last observed Home step. 0=NOT_STARTED, 1..10=HomePhase+1,
+    // 11=COMPLETED. Lower byte=phase, upper byte=rest stage (0..3).
+    uint16_t GetHomeProgressSnapshot() const { return home_progress_snapshot_.load(); }
     MotorOperationSnapshot GetOperationSnapshot() const {
         const uint16_t packed = operation_snapshot_.load();
         return {static_cast<MotorOperation>(packed & 0xffu),
@@ -354,11 +357,17 @@ private:
         VERIFY_SHOULDER_POSITION, RESTORE_SHOULDER, MOVE_REST
     };
     HomePhase home_phase_ = HomePhase::PREPARE;
+    void PublishHomeProgress() {
+        home_progress_snapshot_.store(
+            static_cast<uint16_t>(static_cast<uint8_t>(home_phase_) + 1u) |
+            (static_cast<uint16_t>(home_stage_) << 8));
+    }
     MotorCommandFrame home_command_{};
     bool home_command_initialized_ = false;
     bool home_busy_ = false;
     bool home_stop_pending_ = false;
     std::atomic<HomeId13Verified> home_id13_verified_{HomeId13Verified::UNKNOWN};
+    std::atomic<uint16_t> home_progress_snapshot_{0};
     uint8_t home_stage_ = 0;
     uint8_t home_stable_count_ = 0;
     uint16_t home_shoulder_goal_ = 0;

@@ -629,6 +629,14 @@ void MotorInterface::EnterState(MotorInterfaceState state)
         case MotorInterfaceState::INIT:
             init_state_ = MotorInitState::START;
             init_motor_index_ = 0;
+            init_scan_pass_ = 0;
+            init_torque_on_mask_ = 0;
+            init_mode_mismatch_mask_ = 0;
+            init_first_torque_mask_ = 0;
+            init_first_mode_mask_ = 0;
+            boot_scan_verified_.store(false);
+            boot_torque_on_mask_public_.store(0);
+            boot_mode_mismatch_mask_public_.store(0);
             output_inhibit_ = true;
             command_valid_ = false;
             control_valid_ = false;
@@ -822,6 +830,9 @@ void MotorInterface::StateInit()
 
     ESP_LOGI(TAG, "INIT torque ON count=%u",
              static_cast<unsigned>(init_torque_on_count_));
+    ESP_LOGI(TAG, "INIT double scan verified: torque_on_mask=0x%02X mode_mismatch_mask=0x%02X",
+             static_cast<unsigned>(init_torque_on_mask_),
+             static_cast<unsigned>(init_mode_mismatch_mask_));
 
     // Prioritize detection of retained torque over operating-mode mismatch.
     // Never force EEPROM writes or falsely label the arm DISARMED.
@@ -2949,6 +2960,8 @@ void MotorInterface::ProcessMotorInitialization()
                 if (parameter_fsm_.HasValueMismatch())
                 {
                     ++init_mismatch_count_;
+                    init_mode_mismatch_mask_ |=
+                        static_cast<uint8_t>(1u << init_motor_index_);
 
                     ESP_LOGI(
                         TAG,
@@ -3012,6 +3025,8 @@ void MotorInterface::ProcessMotorInitialization()
                 if (parameter_fsm_.HasValueMismatch())
                 {
                     ++init_torque_on_count_;
+                    init_torque_on_mask_ |=
+                        static_cast<uint8_t>(1u << init_motor_index_);
                     ESP_LOGW(TAG,
                         "INIT servo=%u torque is ON after MCU restart",
                         static_cast<unsigned>(parameter_fsm_.GetServoID()));
@@ -3076,9 +3091,43 @@ void MotorInterface::ProcessMotorInitialization()
 
         case MotorInitState::NEXT_MOTOR:
             ++init_motor_index_;
-            init_state_ = (init_motor_index_ < MOTOR_COUNT)
-                            ? MotorInitState::SET_MODE
-                            : MotorInitState::COMPLETE;
+            if (init_motor_index_ < MOTOR_COUNT)
+            {
+                init_state_ = MotorInitState::SET_MODE;
+                break;
+            }
+            if (init_scan_pass_ == 0)
+            {
+                // Stability check before declaring startup healthy. No servo
+                // writes are issued during this read-only two-pass scan.
+                init_first_torque_mask_ = init_torque_on_mask_;
+                init_first_mode_mask_ = init_mode_mismatch_mask_;
+                init_torque_on_mask_ = 0;
+                init_mode_mismatch_mask_ = 0;
+                init_mismatch_count_ = 0;
+                init_torque_on_count_ = 0;
+                init_motor_index_ = 0;
+                init_scan_pass_ = 1;
+                ESP_LOGI(TAG, "INIT first scan complete; verifying all seven servos again");
+                init_state_ = MotorInitState::SET_MODE;
+                break;
+            }
+            if (init_first_torque_mask_ != init_torque_on_mask_ ||
+                init_first_mode_mask_ != init_mode_mismatch_mask_)
+            {
+                ESP_LOGE(TAG, "INIT inconsistent scan: torque 0x%02X/0x%02X mode 0x%02X/0x%02X",
+                         static_cast<unsigned>(init_first_torque_mask_),
+                         static_cast<unsigned>(init_torque_on_mask_),
+                         static_cast<unsigned>(init_first_mode_mask_),
+                         static_cast<unsigned>(init_mode_mismatch_mask_));
+                init_state_ = MotorInitState::ERROR;
+                EnterError();
+                return;
+            }
+            boot_torque_on_mask_public_.store(init_torque_on_mask_);
+            boot_mode_mismatch_mask_public_.store(init_mode_mismatch_mask_);
+            boot_scan_verified_.store(true);
+            init_state_ = MotorInitState::COMPLETE;
             break;
 
         case MotorInitState::COMPLETE:

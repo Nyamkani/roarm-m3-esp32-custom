@@ -32,3 +32,17 @@ The status check alone cannot prove the physical command paths are blocked; furt
 
 Implement real calibration reference validation and initialization authorization; define persistence, invalidation, emergency behavior and recovery before enabling MOVE.
 Never treat HOME/COMPLETED or PARK/COMPLETED alone as proof of calibration validity.
+
+## Phase 2 protocol skeleton (still not executable)
+
+- T=218,cmd=1: explicit future SBC-KCF initialize request; currently always returns motor_unavailable and performs no motor writes.
+- T=219: read-only initialization status: initialization_status=NOT_INITIALIZED, initialization_complete=false, calibration_valid=false, move_allowed=false, execution_enabled=false.
+- T=211 additionally reports calibration_valid=false.
+- No coordinator, automatic HOME, actual calibration procedure, offset storage or readiness grant has been implemented.
+
+After building/flashing the latest firmware, with a stationary robot:
+python3 tools/init_protocol_smoke.py --port /dev/ttyUSB0 --expect-state DISARMED
+Optional T218 rejection check only after T219 reports execution_enabled=false:
+python3 tools/init_protocol_smoke.py --port /dev/ttyUSB0 --expect-state DISARMED --check-rejection
+
+Only T211 and T219 are sent by default. T218 check is opt-in and must never be run with firmware that supports actual initialization execution.

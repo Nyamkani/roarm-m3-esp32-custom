@@ -1,3 +1,32 @@
+## Verified boot scan before parking / homing tests
+
+During `INIT`, firmware now reads the operating mode and Torque Enable
+register of every servo ID11 through ID17 **twice**, without issuing
+Torque/Goal writes. The two passes must agree. A communication failure or
+inconsistent pass enters `ERROR`. This intentionally adds startup time.
+
+Use `{"T":230}` to inspect the last verified boot snapshot:
+
+- `scan_verified`: both seven-servo read passes succeeded and matched.
+- `torque_on_mask`: bit0=ID11, bit1=ID12, ..., bit6=ID17 (1 means Torque ON at boot scan).
+- `mode_mismatch_mask`: same bit mapping, 1 means unexpected operating mode.
+- `torque_state_current:false`: the snapshot is historical; it cannot certify live torque.
+
+If any torque remains ON, `BOOT_RECOVERY` is retained; **there is no
+automatic torque OFF or servo movement at boot**. With the arm mechanically
+supported, the operator can use the existing explicit recovery path, which
+currently turns OFF *all seven* servos and verifies readback. It does NOT
+yet selectively repair individual servo settings. Servo movement must not
+resume just because `scan_verified` is true.
+
+The earlier PARK -> DISARMING failure at ID11 was
+`ESP_ERR_INVALID_RESPONSE`, so the torque state was not verified.
+The separate ST3215 error diagnostics now distinguish malformed packets
+from register readback mismatch. This boot scan is an additional diagnostic,
+not a fix for that UART / torque verification failure.
+
+---
+
 ## Confirmed mechanical HOME raw pose (authoritative)
 
 The operator explicitly confirmed the desired physical HOME pose was captured

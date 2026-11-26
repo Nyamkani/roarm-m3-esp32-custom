@@ -48,6 +48,7 @@ const char* MotorStateToString(MotorInterfaceState state)
         case MotorInterfaceState::ARMING:     return "ARMING";
         case MotorInterfaceState::ARMED:      return "ARMED";
         case MotorInterfaceState::PARKING:    return "PARKING";
+        case MotorInterfaceState::HOMING:     return "HOMING";
         case MotorInterfaceState::DISARMING:  return "DISARMING";
         case MotorInterfaceState::BOOT_RECOVERY: return "BOOT_RECOVERY";
         case MotorInterfaceState::ERROR:      return "ERROR";
@@ -59,6 +60,7 @@ const char* OperationToString(MotorOperation operation) {
     switch (operation) {
         case MotorOperation::NONE: return "NONE";
         case MotorOperation::PARK: return "PARK";
+        case MotorOperation::HOME: return "HOME";
         default: return "UNKNOWN";
     }
 }
@@ -99,6 +101,7 @@ void HandleJsonLine(const char* json) {
         const MotorOperationSnapshot operation = motor_interface.GetOperationSnapshot();
         const char* motion_state =
             state == MotorInterfaceState::PARKING ? "PARKING" :
+            state == MotorInterfaceState::HOMING ? "HOMING" :
             state == MotorInterfaceState::DISARMING ? "STOPPING" :
             (state == MotorInterfaceState::ARMED || state == MotorInterfaceState::DISARMED) ? "IDLE" : "UNAVAILABLE";
 

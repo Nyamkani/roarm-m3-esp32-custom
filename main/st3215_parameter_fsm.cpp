@@ -68,6 +68,9 @@ esp_err_t ST3215ParameterFSM::Begin(uint8_t id, Register reg,
     failed_pending_relock_ = false;
     value_mismatch_ = false;
     readback_retry_count_ = 0;
+    initial_read_retry_count_ = 0;
+    ack_last_rx_us_ = 0;
+    ack_discarded_bytes_ = 0;
     error_ = ESP_OK; result_ = Result::BUSY;
     Next(Step::READ_RETURN_LEVEL);
     return ESP_OK;
@@ -178,7 +181,16 @@ esp_err_t ST3215ParameterFSM::SendStep()
     expected_params_ = write ? 0 : size;
     rx_started_us_ = esp_timer_get_time();
     rx_size_ = 0; expected_rx_size_ = 0;
-    io_ = (write && return_level_ != 2) ? IO::NO_REPLY_WAIT : IO::WAIT_REPLY;
+    // At Return Level 1 a WRITE ACK is nominally absent, but some
+    // servos emit a late status frame. Do not start the following READ
+    // until the optional WRITE response has been drained.
+    io_ = (write && return_level_ != 2)
+        ? IO::DRAIN_OPTIONAL_WRITE_ACK : IO::WAIT_REPLY;
+    if (io_ == IO::DRAIN_OPTIONAL_WRITE_ACK)
+    {
+        ack_last_rx_us_ = rx_started_us_;
+        ack_discarded_bytes_ = 0;
+    }
     return ESP_OK;
 }
 
@@ -231,6 +243,40 @@ esp_err_t ST3215ParameterFSM::ReadReply(ST3215Response& response, bool& complete
         if (n == 0) return ESP_OK;
         rx_size_ += static_cast<size_t>(n);
     }
+}
+
+esp_err_t ST3215ParameterFSM::DrainOptionalWriteAck(bool& complete)
+{
+    complete = false;
+    const int64_t now_us = esp_timer_get_time();
+    if (now_us - rx_started_us_ > WRITE_ACK_MAX_DRAIN_US)
+    {
+        ESP_LOGE(TAG, "WRITE ACK drain timeout id=%u reg=%u dropped=%u",
+                 static_cast<unsigned>(id_), static_cast<unsigned>(address_),
+                 static_cast<unsigned>(ack_discarded_bytes_));
+        return ESP_ERR_TIMEOUT;
+    }
+
+    uint8_t scratch[32]{};
+    while (true)
+    {
+        const int n = uart_read_bytes(uart_, scratch, sizeof(scratch), 0);
+        if (n < 0) return ESP_FAIL;
+        if (n == 0) break;
+        ack_discarded_bytes_ += static_cast<size_t>(n);
+        ack_last_rx_us_ = esp_timer_get_time();
+    }
+    const int64_t after_read_us = esp_timer_get_time();
+    if (after_read_us - rx_started_us_ >= WRITE_ACK_GUARD_US &&
+        after_read_us - ack_last_rx_us_ >= WRITE_ACK_QUIET_US)
+    {
+        if (ack_discarded_bytes_ > 0)
+            ESP_LOGW(TAG, "Discarded late WRITE ACK bytes id=%u reg=%u count=%u",
+                     static_cast<unsigned>(id_), static_cast<unsigned>(address_),
+                     static_cast<unsigned>(ack_discarded_bytes_));
+        complete = true;
+    }
+    return ESP_OK;
 }
 
 void ST3215ParameterFSM::CompleteStep(const ST3215Response* response)
@@ -378,8 +424,11 @@ ST3215ParameterFSM::Result ST3215ParameterFSM::Poll()
         if (err != ESP_OK) Fail(err);
         return result_;
     }
-    if (io_ == IO::NO_REPLY_WAIT) {
-        CompleteStep(nullptr);
+    if (io_ == IO::DRAIN_OPTIONAL_WRITE_ACK) {
+        bool complete = false;
+        const esp_err_t err = DrainOptionalWriteAck(complete);
+        if (err != ESP_OK) Fail(err);
+        else if (complete) CompleteStep(nullptr);
         return result_;
     }
     ST3215Response response{};
@@ -387,6 +436,29 @@ ST3215ParameterFSM::Result ST3215ParameterFSM::Poll()
     const esp_err_t err = ReadReply(response, complete);
     if (err != ESP_OK)
     {
+        // Before any register WRITE, one malformed or missing response may
+        // be retried as a READ only. Never retry a torque WRITE.
+        if (step_ == Step::READ_RETURN_LEVEL ||
+            step_ == Step::READ_CURRENT ||
+            step_ == Step::READ_TORQUE)
+        {
+            if ((err == ESP_ERR_INVALID_RESPONSE ||
+                 err == ESP_ERR_INVALID_CRC ||
+                 err == ESP_ERR_TIMEOUT ||
+                 err == ESP_ERR_INVALID_SIZE) &&
+                initial_read_retry_count_ < MAX_INITIAL_READ_RETRIES)
+            {
+                ++initial_read_retry_count_;
+                ESP_LOGW(TAG,
+                         "Retrying initial READ id=%u reg=%u step=%u attempt=%u err=%s",
+                         static_cast<unsigned>(id_), static_cast<unsigned>(address_),
+                         static_cast<unsigned>(step_),
+                         static_cast<unsigned>(initial_read_retry_count_),
+                         esp_err_to_name(err));
+                Next(step_);
+                return result_;
+            }
+        }
         // A RAM register WRITE may have succeeded even if the following
         // READ packet was malformed or delayed. Never resend the WRITE.
         if (storage_ == Storage::RAM && step_ == Step::READ_VALUE &&

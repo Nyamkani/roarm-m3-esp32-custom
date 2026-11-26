@@ -1626,6 +1626,25 @@ void MotorInterface::StateHoming()
         }
         if (std::abs(shoulder_sum - 4094) > PARK_SHOULDER_COUPLING_TOLERANCE)
         { EnterError(); return; }
+        if (home_scope_active_ == HomeScope::FULL)
+        {
+            // Initial physical acceptance test is PARK -> FULL HOME only.
+            // Reject an arbitrary start pose before any shoulder torque change.
+            for (size_t i = 0; i < MOTOR_COUNT; ++i)
+            {
+                const int32_t expected = i == 2 ?
+                    HOME_PARK_ID13_RAW : PARK_GOALS[i];
+                const int32_t actual = snapshot.data.motors[i].position;
+                if (std::abs(actual - expected) > HOME_PARK_START_TOLERANCE)
+                {
+                    ESP_LOGE(TAG, "FULL HOME blocked: not at PARK id=%u actual=%ld park=%ld",
+                             static_cast<unsigned>(motors_[i].GetID()),
+                             static_cast<long>(actual), static_cast<long>(expected));
+                    EnterError();
+                    return;
+                }
+            }
+        }
         home_command_initialized_ = true;
         home_target_snapshot_.Write(home_command_);
         home_phase_ = HomePhase::MOVE_BASE;
@@ -2158,6 +2177,29 @@ void MotorInterface::CommProcess()
                         static_cast<int>(cycle_feedback_.motors[2].position));
                     if (!TryEnterHomeFaultHold(cycle_feedback_))
                         EnterError();
+                    return;
+                }
+            }
+            if (home_scope_active_ == HomeScope::FULL &&
+                (home_phase_ == HomePhase::MOVE_SHOULDER ||
+                 home_phase_ == HomePhase::SETTLE_SHOULDER))
+            {
+                const int32_t id12 = cycle_feedback_.motors[1].position;
+                const int32_t id13 = cycle_feedback_.motors[2].position;
+                const int32_t margin = HOME_SHOULDER_CORRIDOR_MARGIN;
+                const bool within =
+                    id12 >= PARK_GOALS[1] - margin &&
+                    id12 <= HOME_REFERENCE_RAW[1] + margin &&
+                    id13 >= HOME_REFERENCE_RAW[2] - margin &&
+                    id13 <= HOME_PARK_ID13_RAW + margin;
+                if (!within)
+                {
+                    ESP_LOGE(TAG,
+                             "HOME shoulder raw corridor exceeded id12=%ld id13=%ld",
+                             static_cast<long>(id12), static_cast<long>(id13));
+                    // ID13 may be torque OFF here: never assume an active
+                    // torque-hold is safe. ERROR inhibits further commands.
+                    EnterError();
                     return;
                 }
             }

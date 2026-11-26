@@ -65,6 +65,31 @@ const char* OperationToString(MotorOperation operation) {
     }
 }
 
+const char* HomePhaseToString(uint8_t phase, uint8_t stage) {
+    switch (phase) {
+        case 0: return "NOT_STARTED";
+        case 1: return "PREPARE";
+        case 2: return "MOVE_BASE";
+        case 3: return "RELEASE_SHOULDER";
+        case 4: return "MOVE_SHOULDER";
+        case 5: return "SETTLE_SHOULDER";
+        case 6: return "SET_SHOULDER_GOAL";
+        case 7: return "VERIFY_SHOULDER_GOAL";
+        case 8: return "VERIFY_SHOULDER_POSITION";
+        case 9: return "RESTORE_SHOULDER";
+        case 10:
+            switch (stage) {
+                case 0: return "MOVE_ELBOW";
+                case 1: return "MOVE_WRIST";
+                case 2: return "MOVE_ROLL";
+                case 3: return "MOVE_GRIPPER";
+                default: return "MOVE_REST_UNKNOWN";
+            }
+        case 11: return "COMPLETED";
+        default: return "UNKNOWN";
+    }
+}
+
 const char* HomeId13VerifiedToString(MotorInterface::HomeId13Verified state) {
     switch (state) {
         case MotorInterface::HomeId13Verified::OFF: return "OFF";
@@ -113,6 +138,9 @@ void HandleJsonLine(const char* json) {
             state == MotorInterfaceState::DISARMING ? "STOPPING" :
             (state == MotorInterfaceState::ARMED || state == MotorInterfaceState::DISARMED) ? "IDLE" : "UNAVAILABLE";
 
+        const uint16_t home_progress = motor_interface.GetHomeProgressSnapshot();
+        const uint8_t home_phase_code = static_cast<uint8_t>(home_progress & 0xffu);
+        const uint8_t home_stage = static_cast<uint8_t>((home_progress >> 8) & 0xffu);
         JointAngles feedback{};
         const bool feedback_valid =
             motor_interface.GetJointFeedback(feedback);
@@ -124,6 +152,8 @@ void HandleJsonLine(const char* json) {
             "\"operation\":\"%s\","
             "\"operation_status\":\"%s\","
             "\"home_id13_last_verified\":\"%s\","
+            "\"home_phase\":\"%s\","
+            "\"home_phase_code\":%u,"
             "\"feedback_valid\":%s,"
             "\"torque_write_enabled\":%s,"
             "\"pwm_output_enabled\":%s,"
@@ -137,6 +167,8 @@ void HandleJsonLine(const char* json) {
             OperationToString(operation.operation),
             OperationStatusToString(operation.status),
             HomeId13VerifiedToString(motor_interface.GetHomeId13LastVerified()),
+            HomePhaseToString(home_phase_code, home_stage),
+            static_cast<unsigned>(home_phase_code),
             feedback_valid ? "true" : "false",
             MOTOR_TORQUE_WRITE_ENABLE ? "true" : "false",
             MOTOR_PWM_OUTPUT_ENABLE ? "true" : "false",

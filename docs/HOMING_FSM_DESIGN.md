@@ -1,3 +1,40 @@
+## Supervised PARK -> FULL HOME physical test configuration (temporary)
+
+The `feature/homing-fsm-gated` branch now has
+`MOTOR_VENDOR_SHOULDER_PARK_ENABLE=1` and
+`MOTOR_HOME_ALLOW_FULL_EXECUTION=1` for a **supervised acceptance test only**.
+The test firmware must not be reused for general autonomous homing.
+
+Preconditions and order:
+
+1. Build and run the offline `tools/home_reference_source_check.py`.
+2. Mechanically support the arm, ensure the physical supply can be isolated,
+   and verify all seven torque states after previous ERROR/BOOT_RECOVERY.
+3. Only after confirming a stable current position and restored feedback,
+   explicitly ARM, then invoke PARK using the existing JSON command.
+   PARK succeeds **only** if its final all-servo OFF verification succeeds.
+4. Explicitly ARM at PARK, inspect fresh raw encoders, then request FULL HOME.
+   The HOME PREPARE phase rejects any servo not within 40 raw counts of
+   its expected PARK pose. Shoulder movement checks ID12 in
+   [PARK 1023 - 30, HOME 1703 + 30] and ID13 in
+   [HOME 2386 - 30, coupled PARK 3071 + 30] each valid feedback cycle.
+5. Read T211/T221/T229 during a supervised run. Stop the test on unexpected
+   movement or torque uncertainty. ERROR inhibits writes but does NOT
+   guarantee motor torque OFF or brake the moving mechanism.
+
+The ST3215 parameter FSM now retries a failed RAM post-WRITE **READ**
+once; it does not replay the WRITE or bypass register equality checks.
+This mitigates some transient errors, but the root cause of the earlier
+ID11 `ESP_ERR_INVALID_RESPONSE` is **not yet proven**, and the fix
+has not been validated on hardware.
+
+These numeric limits are scoped to the verified PARK-to-HOME experiment,
+not independently established mechanical travel limits. The ServoTask
+cannot guarantee collision prevention; it only observes a later
+feedback sample. Do not run unsupported or near mechanical hard stops.
+
+---
+
 ## Verified boot scan before parking / homing tests
 
 During `INIT`, firmware now reads the operating mode and Torque Enable

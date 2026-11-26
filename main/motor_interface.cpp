@@ -1439,7 +1439,9 @@ bool MotorInterface::TryEnterHomeFaultHold(const MotorFeedbackFrame& feedback)
     // ID13 must have historical confirmation of torque ON; never attempt
     // auto-release or auto-enable during an uncertain shoulder phase.
     if (state_ != MotorInterfaceState::HOMING ||
-        comm_state_ != MotorCommState::IDLE || home_busy_ || park_busy_ ||
+        (comm_state_ != MotorCommState::IDLE &&
+         comm_state_ != MotorCommState::PROCESS) ||
+        home_busy_ || park_busy_ ||
         home_id13_verified_.load() != HomeId13Verified::ON)
         return false;
     const int64_t now_us = esp_timer_get_time();
@@ -1497,6 +1499,7 @@ void MotorInterface::StateHoming()
 
     if (home_abort_hold_pending_)
     {
+        output_inhibit_ = true;
         // Never interrupt UART parameter transactions. If ID13 is OFF or
         // status/feedback is uncertain, fail closed without asserting hold.
         if (TryEnterHomeFaultHoldFromSnapshot())
@@ -2042,6 +2045,17 @@ void MotorInterface::CommProcess()
         return;
     }
 
+    // Operator HOME-hold abort: do not send another moving HOME target.
+    // CommComplete will publish the complete feedback and StateHoming will
+    // capture a hold goal at the next idle ServoTask iteration.
+    if (state_ == MotorInterfaceState::HOMING && home_abort_hold_pending_)
+    {
+        output_inhibit_ = true;
+        command_valid_ = false;
+        ChangeCommState(MotorCommState::COMPLETE);
+        return;
+    }
+
     // DISARMED publishes feedback only; never runs PID or transmits commands.
     if (state_ != MotorInterfaceState::ARMED &&
         state_ != MotorInterfaceState::PARKING &&
@@ -2079,7 +2093,8 @@ void MotorInterface::CommProcess()
                     ESP_LOGE(TAG, "HOME shoulder coupling diverged id12=%d id13=%d",
                         static_cast<int>(cycle_feedback_.motors[1].position),
                         static_cast<int>(cycle_feedback_.motors[2].position));
-                    EnterError();
+                    if (!TryEnterHomeFaultHold(cycle_feedback_))
+                        EnterError();
                     return;
                 }
             }
@@ -2091,7 +2106,11 @@ void MotorInterface::CommProcess()
                 if (!home_safety::CheckRawJointLimit(i, cycle_feedback_.motors[i].position) ||
                     !home_safety::CheckRawJointLimit(i, home_command_.motors[i].target_position) ||
                     std::abs(error) > PARK_MAX_TRACKING_ERROR)
-                { EnterError(); return; }
+                {
+                    if (!TryEnterHomeFaultHold(cycle_feedback_))
+                        EnterError();
+                    return;
+                }
             }
             const bool moving = home_phase_ == HomePhase::MOVE_BASE ||
                 home_phase_ == HomePhase::MOVE_SHOULDER ||
@@ -2108,7 +2127,11 @@ void MotorInterface::CommProcess()
                         -PARK_STEP_COUNTS, PARK_STEP_COUNTS);
                     const int32_t next = last + step;
                     if (!home_safety::CheckRawJointLimit(i, next))
-                    { EnterError(); return; }
+                    {
+                        if (!TryEnterHomeFaultHold(cycle_feedback_))
+                            EnterError();
+                        return;
+                    }
                     home_command_.motors[i].target_position = static_cast<int16_t>(next);
                 }
             }

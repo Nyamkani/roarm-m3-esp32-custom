@@ -57,14 +57,14 @@
 // This requires separate supervised mechanical validation before use.
 #define MOTOR_VENDOR_SHOULDER_PARK_ENABLE 0 // temporarily locked after ID12/13 mismatch during real park
 // Explicitly gated: actual Home motion has NOT passed physical safety validation.
-#define MOTOR_HOME_EXECUTION_ENABLE 0
+#define MOTOR_HOME_EXECUTION_ENABLE 1 // supervised BASE_ONLY physical test branch
 // Independent opt-in for releasing shoulder ID13 and running the full route.
 #define MOTOR_HOME_ALLOW_FULL_EXECUTION 0
 // Only for deterministic HOME logic faults with verified ID13 torque ON,
 // fresh feedback and idle/PROCESS UART ownership. Never for UART faults.
 #define MOTOR_HOME_SAFE_FAULT_HOLD_ENABLE 1
 // Compile Home FSM internals without accepting T217 or transitioning into HOMING.
-#define MOTOR_HOME_COMPILE_CHECK 1
+#define MOTOR_HOME_COMPILE_CHECK 0 // real BASE_ONLY build; FULL still gated OFF
 
 #if MOTOR_HOME_COMPILE_CHECK && MOTOR_HOME_EXECUTION_ENABLE
 #error "Home compile-check configuration must not enable physical Home execution"

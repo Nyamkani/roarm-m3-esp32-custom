@@ -225,6 +225,13 @@ if (t == 210.0)
             break;
         }
 
+        // The ESP32 owns readiness; an SBC cannot bypass this by
+        // sending a syntactically valid joint or Cartesian target.
+        if (!motor_.CanExecuteMove()) {
+            result = CommandResult::MOTOR_UNAVAILABLE;
+            break;
+        }
+
         if (UnsupportedMotionOptions(root)) {
             result = CommandResult::UNSUPPORTED_COMMAND;
             break;

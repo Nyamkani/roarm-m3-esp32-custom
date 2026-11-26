@@ -456,8 +456,9 @@ private:
     std::atomic<HomeScope> home_scope_requested_{HomeScope::BASE_ONLY};
     HomeScope home_scope_active_ = HomeScope::BASE_ONLY;
     bool home_abort_hold_pending_ = false;
-    bool TryEnterHomeFaultHold(const MotorFeedbackFrame& feedback);
-    bool TryEnterHomeFaultHoldFromSnapshot();
+    bool TryEnterHomeFaultHold(const MotorFeedbackFrame& feedback,
+                               bool operator_abort = false);
+    bool TryEnterHomeFaultHoldFromSnapshot(bool operator_abort = false);
     bool home_command_initialized_ = false;
     bool home_busy_ = false;
     bool home_stop_pending_ = false;

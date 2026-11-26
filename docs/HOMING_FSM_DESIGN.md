@@ -193,3 +193,58 @@ Never use on an unsupported, moving or unobserved arm.
   source changes have not been built or hardware tested by assistant.
   With supervised `ARMED`: `python3 tools/fault_hold_bench_smoke.py
   --port /dev/ttyUSB0`.
+
+## 2026-11-27 supervised staged physical HOME: BASE_ONLY first
+
+The development branch currently uses:
+- `MOTOR_HOME_EXECUTION_ENABLE=1`: deliberate supervised physical BASE_ONLY test build.
+- `MOTOR_HOME_COMPILE_CHECK=0`: this is no longer compile-only.
+- `MOTOR_HOME_ALLOW_FULL_EXECUTION=0`: **FULL HOME / ID13 TORQUE OFF
+  REMAINS BLOCKED** despite the BASE_ONLY execution gate. Do NOT change
+  this option without independent verification of shoulder release under
+  physical load and an external mechanical support.
+- `MOTOR_HOME_DEVELOPMENT_MODE=1`: no verified joint angle envelopes yet.
+  This is NOT evidence that the mechanical route is clear.
+
+### Commands and diagnostics
+
+- `{"T":217,"cmd":1}`: arm must already be ARMED and pass the full
+  read-only preflight; run BASE_ONLY HOME toward ID11 raw 2047.
+  ID12/13 and all other joints keep their captured current position
+  (other joints may still receive hold command targets).
+  Completion restores ARMED using the measured hold pose. No ID13
+  torque-off, goal calibration, or servo EEPROM write.
+- `{"T":217,"cmd":2}`: FULL HOME request, DENIED in this build.
+  A future explicit separate FULL flag is required for this dangerous path.
+- `{"T":228,"cmd":1}`: while HOMING, request current-position FAULT_HOLD
+  without a torque release. ServoTask avoids new moving HOME goal
+  writes while draining an in-progress UART cycle. Success requires
+  complete valid feedback, safe bus ownership and historically verified
+  ID13 torque ON. If this cannot be established, ERROR can result.
+  This is **not** an emergency stop or a guarantee of physical hold.
+- `{"T":229}`: read-only phase/stage, HOME targets, operation outcome
+  and fault hold state; `T211`, `T221`, `T222`, `T227` remain usable.
+- Deterministic HOME logic faults (tracking error, out-of-bounds raw
+  target/feedback and stage timeout) attempt FAULT_HOLD only when UART
+  is idle/PROCESS with fresh valid feedback, and ID13 was verified ON.
+  Coupling divergence fails closed to ERROR. Actual UART faults and
+  release/restore-shoulder failures still go ERROR, never claim hold.
+
+### One-pass supervised integration test
+
+Build/flash via ESP-IDF VS Code extension first. Mechanically support the
+arm, clear potential interference and confirm position before torque ON.
+Run prior DISARMED/ARMED integration regression as desired.
+In an independently verified stable ARMED state:
+
+`python3 tools/home_base_hardware_smoke.py --port /dev/ttyUSB0`
+
+It checks that T217 FULL is rejected, performs the BASE_ONLY physical
+move, monitors T211/T229 and verifies ID11 settled near 2047. It
+attempts explicit T228 Hold abort on monitoring timeout without torque
+release. **Never run this on an unobserved/unsupported arm.**
+No physical build or test results have been observed for this commit.
+
+Before FULL HOME is authorized: mechanically confirm the shoulder-release
+route and loads, review ID13 readback before restore, external support,
+physical joint limits/clearances, and failure behavior during param FSM.

@@ -49,6 +49,7 @@ const char* MotorStateToString(MotorInterfaceState state)
         case MotorInterfaceState::ARMED:      return "ARMED";
         case MotorInterfaceState::PARKING:    return "PARKING";
         case MotorInterfaceState::HOMING:     return "HOMING";
+        case MotorInterfaceState::FAULT_HOLD: return "FAULT_HOLD";
         case MotorInterfaceState::DISARMING:  return "DISARMING";
         case MotorInterfaceState::BOOT_RECOVERY: return "BOOT_RECOVERY";
         case MotorInterfaceState::ERROR:      return "ERROR";
@@ -135,6 +136,7 @@ void HandleJsonLine(const char* json) {
         const char* motion_state =
             state == MotorInterfaceState::PARKING ? "PARKING" :
             state == MotorInterfaceState::HOMING ? "HOMING" :
+            state == MotorInterfaceState::FAULT_HOLD ? "FAULT_HOLD" :
             state == MotorInterfaceState::DISARMING ? "STOPPING" :
             (state == MotorInterfaceState::ARMED || state == MotorInterfaceState::DISARMED) ? "IDLE" : "UNAVAILABLE";
 
@@ -259,6 +261,67 @@ void HandleJsonLine(const char* json) {
             feedback_was_fresh ? "true" : "false",
             id13_last_off ? "true" : "false",
             fault_phase, id13_state);
+        return;
+    }
+
+    // T225: supervised FAULT_HOLD bench entry; creates no fault in UART.
+    if (cJSON_IsObject(root) && cJSON_IsNumber(type) &&
+        type->valuedouble == 225.0)
+    {
+        const cJSON* cmd = cJSON_GetObjectItemCaseSensitive(root, "cmd");
+        const bool valid = cJSON_IsNumber(cmd) && cmd->valuedouble == 1.0;
+        cJSON_Delete(root);
+        const bool accepted = valid && motor_interface.RequestFaultHoldBenchTest();
+        std::printf("{\"T\":225,\"ok\":%s,\"status\":\"%s\"}\n",
+            accepted ? "true" : "false",
+            !valid ? "invalid_command" :
+            accepted ? "accepted" : "motor_unavailable");
+        return;
+    }
+
+    // T226: supervised explicit recovery from BENCH-only FAULT_HOLD.
+    if (cJSON_IsObject(root) && cJSON_IsNumber(type) &&
+        type->valuedouble == 226.0)
+    {
+        const cJSON* cmd = cJSON_GetObjectItemCaseSensitive(root, "cmd");
+        const bool valid = cJSON_IsNumber(cmd) && cmd->valuedouble == 1.0;
+        cJSON_Delete(root);
+        const bool accepted = valid && motor_interface.RequestFaultHoldBenchResume();
+        std::printf("{\"T\":226,\"ok\":%s,\"status\":\"%s\"}\n",
+            accepted ? "true" : "false",
+            !valid ? "invalid_command" :
+            accepted ? "accepted" : "motor_unavailable");
+        return;
+    }
+
+    // T227: diagnostics for supervised FAULT_HOLD bench lifecycle.
+    if (cJSON_IsObject(root) && cJSON_IsNumber(type) &&
+        type->valuedouble == 227.0)
+    {
+        cJSON_Delete(root);
+        const auto result = motor_interface.GetFaultHoldStatus();
+        const char* status = "UNKNOWN";
+        switch (result)
+        {
+            case MotorInterface::FaultHoldStatus::IDLE: status = "IDLE"; break;
+            case MotorInterface::FaultHoldStatus::REQUESTED: status = "REQUESTED"; break;
+            case MotorInterface::FaultHoldStatus::WRITE_SENT: status = "WRITE_SENT"; break;
+            case MotorInterface::FaultHoldStatus::STABLE: status = "STABLE"; break;
+            case MotorInterface::FaultHoldStatus::FAILED: status = "FAILED"; break;
+        }
+        MotorCommandFrame target{};
+        const bool target_valid = motor_interface.GetFaultHoldTarget(target);
+        std::printf(
+            "{\"T\":227,\"status\":\"%s\",\"target_valid\":%s,"
+            "\"targets\":[%d,%d,%d,%d,%d,%d,%d]}\n",
+            status, target_valid ? "true" : "false",
+            static_cast<int>(target.motors[0].target_position),
+            static_cast<int>(target.motors[1].target_position),
+            static_cast<int>(target.motors[2].target_position),
+            static_cast<int>(target.motors[3].target_position),
+            static_cast<int>(target.motors[4].target_position),
+            static_cast<int>(target.motors[5].target_position),
+            static_cast<int>(target.motors[6].target_position));
         return;
     }
 

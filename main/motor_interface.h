@@ -56,6 +56,12 @@
 #define MOTOR_VENDOR_SHOULDER_PARK_ENABLE 0 // temporarily locked after ID12/13 mismatch during real park
 // Explicitly gated: actual Home motion has NOT passed physical safety validation.
 #define MOTOR_HOME_EXECUTION_ENABLE 0
+// Compile Home FSM internals without accepting T217 or transitioning into HOMING.
+#define MOTOR_HOME_COMPILE_CHECK 1
+
+#if MOTOR_HOME_COMPILE_CHECK && MOTOR_HOME_EXECUTION_ENABLE
+#error "Home compile-check configuration must not enable physical Home execution"
+#endif
 
 #if MOTOR_CONTROL_MODE != MOTOR_CONTROL_PWM && \
     MOTOR_CONTROL_MODE != MOTOR_CONTROL_POSITION

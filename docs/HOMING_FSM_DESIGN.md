@@ -25,6 +25,19 @@ Response on preflight failure:
 
 Array order: ID11 Base, ID12 Shoulder Driving, ID13 Shoulder Driven, ID14 Elbow, ID15 Wrist, ID16 Roll, ID17 Gripper. `null` at ID13 means no active position command to that servo during the proposed release/relocation stage. It does **not** mean the servo's actual desired final position is undefined; the desired coupled center is 2047+2047=4094. This preview does not validate movement clearance, end-of-motion stability, payload, or servo load.
 
+## Phase H1 — gated Homing execution (source implemented; NOT physically validated)
+
+- New action command: `{"T":217,"cmd":1}`.
+- Default `MOTOR_HOME_EXECUTION_ENABLE=0`. With the default build this action returns `{"ok":false,"status":"motor_unavailable"}` and must **not move**.
+- When intentionally enabled in a separately supervised firmware build: require `ARMED` and passing Home preflight, then queue HOMING for the ServoTask. Immediate `accepted` does not mean complete.
+- The ServoTask stages are BASE → ID13 Servo OFF → ID12 SHOULDER → nonblocking 1.2s settling → ID13 GOAL=actual, GOAL/PRESENT verification → ID13 Servo ON → ELBOW → WRIST → ROLL → GRIPPER → capture final actual positions as new HOLD → return to `ARMED`.
+- No `CalibrationOfs()` or EEPROM zero adjustment.
+- Under HOMING, `T=211` publishes `state=HOMING`, `motion_state=HOMING`, `operation=HOME`, `operation_status=RUNNING`. On success `state=ARMED`, `HOME/COMPLETED`.
+- Home positions (except passive ID13) are 2047 counts. Goal stepping uses 3 counts per approximately 10ms cycle, stage stability ±10 counts, velocity ±50 for ten feedback cycles. Total 90s timeout; these values have **not** been validated for Home on hardware.
+- `T=0`/explicit no-Parking Servo OFF can interrupt HOMING, causing `HOME/INTERRUPTED`. It is **not** a safety-rated stopping method; the arm can fall. No general Pause or protective-stop policy has been implemented.
+- Failure during a partial shoulder-release state can leave physical Servo torque unknown. **Do not attempt active Home on an unsupported arm**. Review error recovery and mechanical support before enabling the gate.
+- Servo ON and Parking implementation, including their default safety gates, were not intentionally changed by this feature.
+
 ## Factory source reference
 
 Factory `RoArmM3_moveInit()` sequence:
@@ -36,7 +49,7 @@ Factory `RoArmM3_moveInit()` sequence:
 
 **Our project decision:** **never perform `CalibrationOfs()` during Home**. Calibration must be a separate explicit function and must undergo its own safety review.
 
-## Proposed Home operation FSM (NOT YET IMPLEMENTED)
+## Execution plan (H1 code exists behind build-time gate; pending build and physical validation)
 
 - `IDLE -> HOME_PREFLIGHT -> HOME_BASE -> HOME_SHOULDER_RELEASE -> HOME_SHOULDER_MOVE -> HOME_SHOULDER_SETTLE -> HOME_SHOULDER_GOAL_SYNC -> HOME_SHOULDER_RESTORE -> HOME_ELBOW -> HOME_WRIST_ROLL -> HOME_GRIPPER -> HOME_VERIFY -> COMPLETED`.
 - Execution should be accepted only in `ARMED` and when hardware output gates permit physical motion. No automatic execution at boot or Servo ON.

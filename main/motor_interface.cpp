@@ -594,6 +594,7 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             home_stable_count_ = 0;
             home_shoulder_goal_ = 0;
             home_start_us_ = esp_timer_get_time();
+            home_shoulder_settle_us_ = 0;
             home_last_goal_us_ = 0;
             output_inhibit_ = true;
             ChangeCommState(MotorCommState::IDLE);
@@ -1284,7 +1285,10 @@ void MotorInterface::StateHoming()
             if (home_phase_ == HomePhase::MOVE_BASE)
                 home_phase_ = HomePhase::RELEASE_SHOULDER;
             else if (home_phase_ == HomePhase::MOVE_SHOULDER)
-                home_phase_ = HomePhase::SET_SHOULDER_GOAL;
+            {
+                home_phase_ = HomePhase::SETTLE_SHOULDER;
+                home_shoulder_settle_us_ = esp_timer_get_time();
+            }
             else if (home_stage_ < 3)
                 ++home_stage_;
             else
@@ -1309,6 +1313,19 @@ void MotorInterface::StateHoming()
                 ESP_LOGI(TAG, "HOME completed; new current pose captured for hold");
                 ChangeState(MotorInterfaceState::ARMED);
             }
+            return;
+        }
+        UpdateCommunicationError();
+        ProcessCommunicationFSM();
+        return;
+    }
+
+    if (home_phase_ == HomePhase::SETTLE_SHOULDER)
+    {
+        if (esp_timer_get_time() - home_shoulder_settle_us_ >= 1200000 &&
+            comm_state_ == MotorCommState::IDLE)
+        {
+            home_phase_ = HomePhase::SET_SHOULDER_GOAL;
             return;
         }
         UpdateCommunicationError();
@@ -1914,7 +1931,8 @@ esp_err_t MotorInterface::SendSyncPosition(
         if (((state_ == MotorInterfaceState::PARKING &&
             park_phase_ == ParkPhase::MOVE) ||
             (state_ == MotorInterfaceState::HOMING &&
-            home_phase_ == HomePhase::MOVE_SHOULDER)) &&
+            (home_phase_ == HomePhase::MOVE_SHOULDER ||
+             home_phase_ == HomePhase::SETTLE_SHOULDER))) &&
             motors_[i].GetID() == 13)
             continue;
 

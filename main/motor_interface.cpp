@@ -1680,14 +1680,33 @@ void MotorInterface::StateHoming()
                 if (!feedback_snapshot_.Read(snapshot) ||
                     !ValidateFeedback(snapshot.data, esp_timer_get_time()))
                 { EnterError(); return; }
-                int32_t sum = snapshot.data.motors[1].position +
-                    snapshot.data.motors[2].position;
+                const int32_t sum =
+                    static_cast<int32_t>(snapshot.data.motors[1].position) +
+                    static_cast<int32_t>(snapshot.data.motors[2].position);
                 if (std::abs(sum - 4094) > PARK_SHOULDER_COUPLING_TOLERANCE)
                 { EnterError(); return; }
+                // Full HOME cannot declare success based on the passive
+                // shoulder coupling sum alone. Confirm every servo is at
+                // the operator-selected physical HOME reference.
                 for (size_t i = 0; i < MOTOR_COUNT; ++i)
                 {
                     const int32_t pos = snapshot.data.motors[i].position;
-                    if (pos < 0 || pos > 4095) { EnterError(); return; }
+                    const int32_t vel = snapshot.data.motors[i].velocity;
+                    const int32_t allowed_error =
+                        i == 2 ? HOME_ID13_REFERENCE_TOLERANCE : 10;
+                    if (!home_safety::CheckRawJointLimit(i, pos) ||
+                        std::abs(pos - HOME_REFERENCE_RAW[i]) > allowed_error ||
+                        std::abs(vel) > 50)
+                    {
+                        ESP_LOGE(TAG,
+                            "HOME final reference mismatch id=%u pos=%ld ref=%ld vel=%ld",
+                            static_cast<unsigned>(motors_[i].GetID()),
+                            static_cast<long>(pos),
+                            static_cast<long>(HOME_REFERENCE_RAW[i]),
+                            static_cast<long>(vel));
+                        EnterError();
+                        return;
+                    }
                     hold_command_.motors[i].target_position =
                         static_cast<int16_t>(pos);
                 }

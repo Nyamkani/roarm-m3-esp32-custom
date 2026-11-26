@@ -1,3 +1,36 @@
+## Confirmed mechanical HOME raw pose (authoritative)
+
+The operator explicitly confirmed the desired physical HOME pose was captured
+with seven ST3215 raw encoders:
+
+| Servo | Role | HOME reference raw |
+|---|---|---:|
+| 11 | Base | 2043 |
+| 12 | Shoulder driving | 1703 |
+| 13 | Shoulder driven | 2386 |
+| 14 | Elbow | 2927 |
+| 15 | Wrist | 1549 |
+| 16 | Roll | 2048 |
+| 17 | Gripper | 2046 |
+
+**This is NOT the manufacturer PARK pose.** Previous examples in this
+document that identify all-2047 as HOME are superseded by this section.
+
+Active `HOME_GOALS` are `[2043,1703,-1,2927,1549,2048,2046]`;
+ID13's raw 2386 is preserved as a *reference and post-movement
+verification*, never sent as an active command while its torque is OFF.
+Before ID13 servo goal/torque restore, both ID12 (1703 ±10) and ID13
+(2386 ±20) must be present with fresh feedback, stable ID13 velocity
+and shoulder coupling in tolerance. The 2386 reference does not imply
+that mechanical safety is established throughout the path.
+
+The full HOME and vendor shoulder PARK gates are both kept disabled in
+the repository baseline after an observed MOVE_SHOULDER timeout and
+unexpected near-vertical arm pose. Do not re-enable from this documentation
+alone. Revalidate path, support and restore procedure before powered tests.
+
+---
+
 # Homing FSM — preflight and staged execution plan
 
 ## Current implementation (Phase H0, read-only)

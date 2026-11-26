@@ -71,6 +71,32 @@ bool MotorInterface::RequestCurrentHoldTest()
 #endif
 }
 
+bool MotorInterface::RequestFaultHoldBenchTest()
+{
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_POSITION_OUTPUT_ENABLE
+    if (GetState() != MotorInterfaceState::ARMED)
+        return false;
+    ServoRequest expected = ServoRequest::NONE;
+    if (!servo_request_.compare_exchange_strong(expected, ServoRequest::FAULT_HOLD_TEST))
+        return false;
+    fault_hold_status_.store(FaultHoldStatus::REQUESTED);
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool MotorInterface::RequestFaultHoldBenchResume()
+{
+    if (GetState() != MotorInterfaceState::FAULT_HOLD ||
+        !fault_hold_bench_test_ ||
+        fault_hold_status_.load() != FaultHoldStatus::STABLE)
+        return false;
+    ServoRequest expected = ServoRequest::NONE;
+    return servo_request_.compare_exchange_strong(
+        expected, ServoRequest::FAULT_HOLD_RESUME);
+}
+
 bool MotorInterface::GetHoldTestTarget(MotorCommandFrame& out)
 {
     return hold_test_target_snapshot_.ReadData(out);
@@ -635,6 +661,14 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             ChangeCommState(MotorCommState::IDLE);
             last_comm_cycle_us_ = 0;
             break;
+        case MotorInterfaceState::FAULT_HOLD:
+            // Captured hold_command_ is maintained, but normal MOVE and
+            // HOME remain unavailable. No torque write or EEPROM change.
+            output_inhibit_ = true;
+            fault_hold_stable_cycles_ = 0;
+            ChangeCommState(MotorCommState::IDLE);
+            last_comm_cycle_us_ = 0;
+            break;
         case MotorInterfaceState::PARKING:
             park_stop_pending_ = false;
             park_command_ = {};
@@ -735,6 +769,7 @@ void MotorInterface::ProcessInterfaceFSM()
         case MotorInterfaceState::ARMED: StateArmed(); break;
         case MotorInterfaceState::PARKING: StateParking(); break;
         case MotorInterfaceState::HOMING: StateHoming(); break;
+        case MotorInterfaceState::FAULT_HOLD: StateFaultHold(); break;
         case MotorInterfaceState::DISARMING: StateDisarming(); break;
         case MotorInterfaceState::ERROR: StateError(); break;
     }
@@ -1044,6 +1079,43 @@ void MotorInterface::StateArmed()
         if (request == ServoRequest::OFF)
         {
             ChangeState(MotorInterfaceState::DISARMING);
+            return;
+        }
+        if (request == ServoRequest::FAULT_HOLD_TEST)
+        {
+            SharedSnapshotFrame<MotorFeedbackFrame> snapshot{};
+            const int64_t now_us = esp_timer_get_time();
+            bool valid = GetFeedbackFrame(snapshot) &&
+                ValidateFeedback(snapshot.data, now_us);
+            if (valid)
+            {
+                const int32_t sum = snapshot.data.motors[1].position +
+                    snapshot.data.motors[2].position;
+                if (std::abs(sum - 4094) > PARK_SHOULDER_COUPLING_TOLERANCE)
+                    valid = false;
+                for (size_t i = 0; i < MOTOR_COUNT && valid; ++i)
+                {
+                    const auto& fb = snapshot.data.motors[i];
+                    if (fb.position < 0 || fb.position > 4095 ||
+                        std::abs(static_cast<int32_t>(fb.velocity)) > 50)
+                        valid = false;
+                }
+            }
+            if (!valid)
+            {
+                fault_hold_status_.store(FaultHoldStatus::FAILED);
+                return;
+            }
+            for (size_t i = 0; i < MOTOR_COUNT; ++i)
+            {
+                hold_command_.motors[i].target_position = snapshot.data.motors[i].position;
+                hold_command_.motors[i].target_velocity = 0;
+                hold_command_.motors[i].output = 0;
+            }
+            fault_hold_target_snapshot_.Write(hold_command_);
+            fault_hold_bench_test_ = true;
+            ChangeState(MotorInterfaceState::FAULT_HOLD);
+            ESP_LOGW(TAG, "Supervised simulated fault: current-pose FAULT_HOLD");
             return;
         }
         if (request == ServoRequest::HOLD_TEST)
@@ -1580,6 +1652,31 @@ void MotorInterface::StateDisarming()
 #endif
 }
 
+void MotorInterface::StateFaultHold()
+{
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_POSITION_OUTPUT_ENABLE
+    const ServoRequest request = servo_request_.exchange(ServoRequest::NONE);
+    if (request == ServoRequest::OFF)
+    {
+        // Explicit release is gravity-sensitive and never automatic.
+        ChangeState(MotorInterfaceState::DISARMING);
+        return;
+    }
+    if (request == ServoRequest::FAULT_HOLD_RESUME &&
+        fault_hold_bench_test_ &&
+        fault_hold_status_.load() == FaultHoldStatus::STABLE)
+    {
+        fault_hold_bench_test_ = false;
+        ChangeState(MotorInterfaceState::ARMED);
+        return;
+    }
+    UpdateCommunicationError();
+    ProcessCommunicationFSM();
+#else
+    EnterError();
+#endif
+}
+
 void MotorInterface::StateError()
 {
     // TX inhibit does not guarantee actual motors are torque OFF.
@@ -1594,7 +1691,8 @@ void MotorInterface::ProcessCommunicationFSM()
             state_ != MotorInterfaceState::BOOT_RECOVERY &&
             state_ != MotorInterfaceState::ARMED &&
             state_ != MotorInterfaceState::PARKING &&
-            state_ != MotorInterfaceState::HOMING)
+            state_ != MotorInterfaceState::HOMING &&
+            state_ != MotorInterfaceState::FAULT_HOLD)
             return;
 
         if (comm_state_ != MotorCommState::IDLE &&
@@ -1811,7 +1909,8 @@ void MotorInterface::CommProcess()
     // DISARMED publishes feedback only; never runs PID or transmits commands.
     if (state_ != MotorInterfaceState::ARMED &&
         state_ != MotorInterfaceState::PARKING &&
-        state_ != MotorInterfaceState::HOMING)
+        state_ != MotorInterfaceState::HOMING &&
+        state_ != MotorInterfaceState::FAULT_HOLD)
     {
         ChangeControlValidity(false);
         command_valid_ = false;
@@ -2163,7 +2262,8 @@ void MotorInterface::CommSyncWrite()
     if (!output_enabled ||
         (state_ != MotorInterfaceState::ARMED &&
          state_ != MotorInterfaceState::PARKING &&
-         state_ != MotorInterfaceState::HOMING) ||
+         state_ != MotorInterfaceState::HOMING &&
+         state_ != MotorInterfaceState::FAULT_HOLD) ||
         (servo_request_.load() == ServoRequest::OFF || park_stop_pending_ ||
          home_stop_pending_) ||
         !command_valid_ ||
@@ -2218,6 +2318,26 @@ void MotorInterface::CommComplete()
     // All seven feedback responses were validated.
     feedback_snapshot_.Write(cycle_feedback_);
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+    if (state_ == MotorInterfaceState::FAULT_HOLD)
+    {
+        bool stable = cycle_write_sent_;
+        if (stable)
+        {
+            for (size_t i = 0; i < MOTOR_COUNT; ++i)
+            {
+                const int32_t diff =
+                    static_cast<int32_t>(hold_command_.motors[i].target_position) -
+                    static_cast<int32_t>(cycle_feedback_.motors[i].position);
+                const int32_t velocity = cycle_feedback_.motors[i].velocity;
+                if (std::abs(diff) > 10 || std::abs(velocity) > 50)
+                { stable = false; break; }
+            }
+        }
+        fault_hold_stable_cycles_ = stable ?
+            static_cast<uint8_t>(std::min<int>(fault_hold_stable_cycles_ + 1, 10)) : 0;
+        fault_hold_status_.store(fault_hold_stable_cycles_ >= 10 ?
+            FaultHoldStatus::STABLE : FaultHoldStatus::WRITE_SENT);
+    }
     if (state_ == MotorInterfaceState::ARMED)
     {
         const HoldTestStatus status = hold_test_status_.load();
@@ -2400,6 +2520,8 @@ void MotorInterface::EnterError()
         esp_err_to_name(parameter_fsm_.GetError())
     );
         
+    if (state_ == MotorInterfaceState::FAULT_HOLD)
+        fault_hold_status_.store(FaultHoldStatus::FAILED);
     if (hold_test_status_.load() == HoldTestStatus::PENDING ||
         hold_test_status_.load() == HoldTestStatus::CAPTURED ||
         hold_test_status_.load() == HoldTestStatus::WRITE_SENT)

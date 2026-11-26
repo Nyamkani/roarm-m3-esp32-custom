@@ -237,6 +237,11 @@ public:
 
     MotorInterfaceState GetState() const { return state_public_.load(); }
     bool IsTorqueOffVerified() const { return torque_off_public_.load(); }
+    // Read-only two-pass boot scan (bit 0 = ID11 ... bit 6 = ID17).
+    // Masks are only authoritative if IsBootTorqueScanVerified() is true.
+    bool IsBootTorqueScanVerified() const { return boot_scan_verified_.load(); }
+    uint8_t GetBootTorqueOnMask() const { return boot_torque_on_mask_public_.load(); }
+    uint8_t GetBootModeMismatchMask() const { return boot_mode_mismatch_mask_public_.load(); }
     // Initialization completion is intentionally false until a future
     // independently validated calibration/initialization coordinator exists.
     // This is NOT inferred from an ARM, PARK, or HOME operation result.
@@ -306,6 +311,14 @@ private:
 
     uint8_t init_mismatch_count_ = 0;
     uint8_t init_torque_on_count_ = 0;
+    uint8_t init_scan_pass_ = 0;
+    uint8_t init_torque_on_mask_ = 0;
+    uint8_t init_mode_mismatch_mask_ = 0;
+    uint8_t init_first_torque_mask_ = 0;
+    uint8_t init_first_mode_mask_ = 0;
+    std::atomic<bool> boot_scan_verified_{false};
+    std::atomic<uint8_t> boot_torque_on_mask_public_{0};
+    std::atomic<uint8_t> boot_mode_mismatch_mask_public_{0};
     bool boot_recheck_mode_after_off_ = false;
 
     void ProcessMotorInitialization();

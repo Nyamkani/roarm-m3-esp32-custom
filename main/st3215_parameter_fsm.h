@@ -87,4 +87,7 @@ private:
     uint8_t expected_params_ = 0;
     static constexpr int64_t RESPONSE_TIMEOUT_US = 3000;
     bool value_mismatch_ = false;
+    // Retry only the readback after a completed RAM WRITE; never replay WRITE.
+    uint8_t readback_retry_count_ = 0;
+    static constexpr uint8_t MAX_READBACK_RETRIES = 1;
 };

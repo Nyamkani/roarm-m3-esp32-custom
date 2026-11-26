@@ -201,7 +201,7 @@ public:
         IDLE, PENDING, CAPTURED, WRITE_SENT, FEEDBACK_STABLE, REJECTED, FAILED
     };
     HoldTestStatus GetHoldTestStatus() const { return hold_test_status_.load(); }
-    bool GetHoldTestTarget(MotorCommandFrame& out) const;
+    bool GetHoldTestTarget(MotorCommandFrame& out);
 
     MotorInterfaceState GetState() const { return state_public_.load(); }
     bool IsTorqueOffVerified() const { return torque_off_public_.load(); }
@@ -323,7 +323,7 @@ private:
     const arm_calibration::CalibrationData calibration_data_{};
     enum class ServoRequest : uint8_t { NONE, ON, OFF, PARK, HOME, HOLD_TEST };
     std::atomic<HoldTestStatus> hold_test_status_{HoldTestStatus::IDLE};
-    MotorCommandFrame hold_test_target_{};
+    SharedSnapshot<MotorCommandFrame> hold_test_target_snapshot_{};
     uint8_t hold_test_stable_cycles_ = 0;
     std::atomic<ServoRequest> servo_request_{ServoRequest::NONE};
     std::atomic<uint16_t> operation_snapshot_{0}; // operation in low byte, status in high byte

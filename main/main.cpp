@@ -249,6 +249,7 @@ void HandleJsonLine(const char* json) {
             "{\"T\":222,\"development_mode\":%s,"
             "\"joint_limits_verified\":%s,"
             "\"fault_hold_output_enabled\":%s,"
+            "\"fault_hold_bench_enabled\":true,"
             "\"fault_recorded\":%s,"
             "\"feedback_fresh_at_fault\":%s,"
             "\"id13_last_verified_off_at_fault\":%s,"

@@ -47,6 +47,7 @@ esp_err_t MotorInterface::Initialize(
 void MotorInterface::RequestServoOn() { servo_request_.store(ServoRequest::ON); }
 void MotorInterface::RequestServoOff() { servo_request_.store(ServoRequest::OFF); }
 void MotorInterface::RequestServoPark() { servo_request_.store(ServoRequest::PARK); }
+void MotorInterface::RequestServoHome() { servo_request_.store(ServoRequest::HOME); }
 
 ST3215* MotorInterface::GetMotor(size_t index)
 {
@@ -476,6 +477,21 @@ void MotorInterface::ChangeState(MotorInterfaceState next)
              operation.operation == MotorOperation::PARK &&
              operation.status == MotorOperationStatus::RUNNING)
         SetOperationSnapshot(MotorOperation::PARK, MotorOperationStatus::COMPLETED);
+    else if (next == MotorInterfaceState::HOMING)
+        SetOperationSnapshot(MotorOperation::HOME, MotorOperationStatus::RUNNING);
+    else if (state_ == MotorInterfaceState::HOMING &&
+             next == MotorInterfaceState::ARMED &&
+             operation.operation == MotorOperation::HOME &&
+             operation.status == MotorOperationStatus::RUNNING)
+        SetOperationSnapshot(MotorOperation::HOME, MotorOperationStatus::COMPLETED);
+    else if (state_ == MotorInterfaceState::HOMING &&
+             next == MotorInterfaceState::DISARMING && home_stop_pending_)
+        SetOperationSnapshot(MotorOperation::HOME, MotorOperationStatus::INTERRUPTED);
+    else if (next == MotorInterfaceState::ERROR &&
+             operation.operation == MotorOperation::HOME &&
+             (operation.status == MotorOperationStatus::RUNNING ||
+              operation.status == MotorOperationStatus::INTERRUPTED))
+        SetOperationSnapshot(MotorOperation::HOME, MotorOperationStatus::FAILED);
     else if (next == MotorInterfaceState::ERROR &&
              operation.operation == MotorOperation::PARK &&
              (operation.status == MotorOperationStatus::RUNNING ||
@@ -567,6 +583,20 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             park_busy_ = false;
             ChangeCommState(MotorCommState::IDLE);
             break;
+        case MotorInterfaceState::HOMING:
+            home_phase_ = HomePhase::PREPARE;
+            home_command_ = {};
+            home_command_initialized_ = false;
+            home_busy_ = false;
+            home_stop_pending_ = false;
+            home_stage_ = 0;
+            home_stable_count_ = 0;
+            home_shoulder_goal_ = 0;
+            home_start_us_ = esp_timer_get_time();
+            home_last_goal_us_ = 0;
+            output_inhibit_ = true;
+            ChangeCommState(MotorCommState::IDLE);
+            break;
         case MotorInterfaceState::DISARMING:
             torque_off_verified_ = false;
             torque_off_public_.store(false);
@@ -630,6 +660,7 @@ void MotorInterface::ProcessInterfaceFSM()
         case MotorInterfaceState::ARMING: StateArming(); break;
         case MotorInterfaceState::ARMED: StateArmed(); break;
         case MotorInterfaceState::PARKING: StateParking(); break;
+        case MotorInterfaceState::HOMING: StateHoming(); break;
         case MotorInterfaceState::DISARMING: StateDisarming(); break;
         case MotorInterfaceState::ERROR: StateError(); break;
     }
@@ -941,6 +972,15 @@ void MotorInterface::StateArmed()
             ChangeState(MotorInterfaceState::DISARMING);
             return;
         }
+        if (request == ServoRequest::HOME)
+        {
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_HOME_EXECUTION_ENABLE && MOTOR_TORQUE_WRITE_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE
+            ChangeState(MotorInterfaceState::HOMING);
+#else
+            ESP_LOGW(TAG, "Home execution is disabled at build time");
+#endif
+            return;
+        }
         if (request == ServoRequest::PARK)
         {
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
@@ -1188,7 +1228,8 @@ void MotorInterface::ProcessCommunicationFSM()
         if (state_ != MotorInterfaceState::DISARMED &&
             state_ != MotorInterfaceState::BOOT_RECOVERY &&
             state_ != MotorInterfaceState::ARMED &&
-            state_ != MotorInterfaceState::PARKING)
+            state_ != MotorInterfaceState::PARKING &&
+            state_ != MotorInterfaceState::HOMING)
             return;
 
         if (comm_state_ != MotorCommState::IDLE &&
@@ -1403,7 +1444,8 @@ void MotorInterface::CommProcess()
 
     // DISARMED publishes feedback only; never runs PID or transmits commands.
     if (state_ != MotorInterfaceState::ARMED &&
-        state_ != MotorInterfaceState::PARKING)
+        state_ != MotorInterfaceState::PARKING &&
+        state_ != MotorInterfaceState::HOMING)
     {
         ChangeControlValidity(false);
         command_valid_ = false;
@@ -1414,11 +1456,44 @@ void MotorInterface::CommProcess()
     }
 
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
-    // Initial hold and park targets are owned by the Servo FSM, not JSON.
-    if (state_ == MotorInterfaceState::PARKING)
+    // Initial hold, park, and home targets are owned by the Servo FSM, not JSON.
+    if (state_ == MotorInterfaceState::PARKING || state_ == MotorInterfaceState::HOMING)
     {
         // Integrate goal from previous commanded position rather than from
         // feedback. Otherwise a 3-count command can stall indefinitely.
+        if (state_ == MotorInterfaceState::HOMING)
+        {
+            if (!home_command_initialized_) { EnterError(); return; }
+            for (size_t i = 0; i < MOTOR_COUNT; ++i)
+            {
+                if (HOME_GOALS[i] < 0) continue;
+                const int32_t error = static_cast<int32_t>(home_command_.motors[i].target_position) -
+                    static_cast<int32_t>(cycle_feedback_.motors[i].position);
+                if (std::abs(error) > PARK_MAX_TRACKING_ERROR) { EnterError(); return; }
+            }
+            const bool moving = home_phase_ == HomePhase::MOVE_BASE ||
+                home_phase_ == HomePhase::MOVE_SHOULDER ||
+                home_phase_ == HomePhase::MOVE_REST;
+            if (moving && now_us - home_last_goal_us_ >= PARK_GOAL_PERIOD_US)
+            {
+                home_last_goal_us_ = now_us;
+                for (size_t i = 0; i < MOTOR_COUNT; ++i)
+                {
+                    if (HOME_GOALS[i] < 0 || !IsHomeStageServo(i)) continue;
+                    const int32_t last = home_command_.motors[i].target_position;
+                    const int32_t step = std::clamp(
+                        static_cast<int32_t>(HOME_GOALS[i]) - last,
+                        -PARK_STEP_COUNTS, PARK_STEP_COUNTS);
+                    home_command_.motors[i].target_position = static_cast<int16_t>(last + step);
+                }
+            }
+            cycle_command_ = home_command_;
+            command_valid_ = true;
+            ChangeControlValidity(true);
+            output_inhibit_ = false;
+            ChangeCommState(MotorCommState::SYNC_WRITE);
+            return;
+        }
         if (!park_command_initialized_)
         {
             EnterError();
@@ -1630,8 +1705,12 @@ esp_err_t MotorInterface::SendSyncPosition(
     {
         // Factory PARK releases ID13 while ID12 drives the coupled shoulder.
         // Do not overwrite ID13's goal during this torque-off MOVE phase.
-        if (state_ == MotorInterfaceState::PARKING &&
-            park_phase_ == ParkPhase::MOVE && motors_[i].GetID() == 13)
+        if (((state_ == MotorInterfaceState::PARKING &&
+            park_phase_ == ParkPhase::MOVE) ||
+            (state_ == MotorInterfaceState::HOMING &&
+            (home_phase_ == HomePhase::MOVE_SHOULDER ||
+             home_phase_ == HomePhase::MOVE_REST))) &&
+            motors_[i].GetID() == 13)
             continue;
 
         const int32_t target = command.motors[i].target_position;
@@ -1693,7 +1772,8 @@ void MotorInterface::CommSyncWrite()
 
     if (!output_enabled ||
         (state_ != MotorInterfaceState::ARMED &&
-         state_ != MotorInterfaceState::PARKING) ||
+         state_ != MotorInterfaceState::PARKING &&
+         state_ != MotorInterfaceState::HOMING) ||
         (servo_request_.load() == ServoRequest::OFF || park_stop_pending_) ||
         !command_valid_ ||
         output_inhibit_)
@@ -1747,6 +1827,26 @@ void MotorInterface::CommComplete()
     // All seven feedback responses were validated.
     feedback_snapshot_.Write(cycle_feedback_);
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+    if (state_ == MotorInterfaceState::HOMING && home_command_initialized_)
+    {
+        const bool moving = home_phase_ == HomePhase::MOVE_BASE ||
+            home_phase_ == HomePhase::MOVE_SHOULDER ||
+            home_phase_ == HomePhase::MOVE_REST;
+        if (moving)
+        {
+            bool stable = true;
+            for (size_t i = 0; i < MOTOR_COUNT; ++i)
+            {
+                if (HOME_GOALS[i] < 0 || !IsHomeStageServo(i)) continue;
+                const int32_t diff = HOME_GOALS[i] - cycle_feedback_.motors[i].position;
+                const int32_t vel = cycle_feedback_.motors[i].velocity;
+                if (diff < -10 || diff > 10 || vel < -50 || vel > 50)
+                { stable = false; break; }
+            }
+            home_stable_count_ = stable ?
+                static_cast<uint8_t>(std::min<int>(home_stable_count_ + 1, 10)) : 0;
+        }
+    }
     if (state_ == MotorInterfaceState::PARKING &&
         park_phase_ == ParkPhase::MOVE)
     {

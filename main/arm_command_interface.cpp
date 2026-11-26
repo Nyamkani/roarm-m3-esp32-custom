@@ -123,25 +123,42 @@ if (t == 215.0)
     break;
 }
 
-// T=217: gated Home execution request. No calibration writes.
+// T=217: explicit staged HOME. cmd=1 BASE_ONLY, cmd=2 FULL.
+// Both require an intentional firmware build gate. Full HOME additionally
+// requires a separate compile-time opt-in for ID13 shoulder torque release.
 if (t == 217.0)
 {
     double cmd = 0.0;
-    if (!ReadFinite(root, "cmd", cmd) || cmd != 1.0)
+    if (!ReadFinite(root, "cmd", cmd) || (cmd != 1.0 && cmd != 2.0))
     { result = CommandResult::INVALID_TARGET; break; }
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_HOME_EXECUTION_ENABLE && MOTOR_TORQUE_WRITE_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE
     MotorCommandFrame preview{};
     if (motor_.GetState() != MotorInterfaceState::ARMED ||
         !motor_.PreviewPositionHome(preview))
     { result = CommandResult::MOTOR_UNAVAILABLE; break; }
+    const auto scope = cmd == 1.0 ?
+        MotorInterface::HomeScope::BASE_ONLY : MotorInterface::HomeScope::FULL;
+    if (!motor_.RequestServoHomeScoped(scope))
+    { result = CommandResult::MOTOR_UNAVAILABLE; break; }
     has_target_ = false;
     last_command_us_ = 0;
     last_publish_us_ = 0;
-    motor_.RequestServoHome();
     result = CommandResult::ACCEPTED;
 #else
     result = CommandResult::MOTOR_UNAVAILABLE;
 #endif
+    break;
+}
+
+// T=228: explicit HOME -> current pose FAULT_HOLD request.
+// Does not torque-off. Can fail if ID13 is off or communication uncertain.
+if (t == 228.0)
+{
+    double cmd = 0.0;
+    if (!ReadFinite(root, "cmd", cmd) || cmd != 1.0)
+    { result = CommandResult::INVALID_TARGET; break; }
+    result = motor_.RequestHomeHoldAbort() ?
+        CommandResult::ACCEPTED : CommandResult::MOTOR_UNAVAILABLE;
     break;
 }
 

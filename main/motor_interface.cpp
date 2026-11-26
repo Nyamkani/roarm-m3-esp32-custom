@@ -1222,7 +1222,7 @@ bool MotorInterface::IsHomeStageServo(size_t index) const
 
 void MotorInterface::StateHoming()
 {
-#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_HOME_EXECUTION_ENABLE && MOTOR_TORQUE_WRITE_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && (MOTOR_HOME_EXECUTION_ENABLE || MOTOR_HOME_COMPILE_CHECK) && MOTOR_TORQUE_WRITE_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE
     // A single ServoTask owns HomePhase and home_stage_. Publish a packed
     // consistent read-only diagnostic snapshot before working this iteration.
     PublishHomeProgress();
@@ -1722,6 +1722,24 @@ void MotorInterface::CommProcess()
         if (state_ == MotorInterfaceState::HOMING)
         {
             if (!home_command_initialized_) { EnterError(); return; }
+            // ID13 is passive while ID12 moves. Monitor the physical pairing,
+            // not only commanded tracking, to catch a drifting shoulder.
+            if (home_phase_ == HomePhase::MOVE_SHOULDER ||
+                home_phase_ == HomePhase::SETTLE_SHOULDER)
+            {
+                const int32_t shoulder_sum =
+                    static_cast<int32_t>(cycle_feedback_.motors[1].position) +
+                    static_cast<int32_t>(cycle_feedback_.motors[2].position);
+                if (std::abs(shoulder_sum - 4094) >
+                    PARK_SHOULDER_COUPLING_TOLERANCE)
+                {
+                    ESP_LOGE(TAG, "HOME shoulder coupling diverged id12=%d id13=%d",
+                        static_cast<int>(cycle_feedback_.motors[1].position),
+                        static_cast<int>(cycle_feedback_.motors[2].position));
+                    EnterError();
+                    return;
+                }
+            }
             for (size_t i = 0; i < MOTOR_COUNT; ++i)
             {
                 if (HOME_GOALS[i] < 0) continue;

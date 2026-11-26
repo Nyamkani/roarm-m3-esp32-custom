@@ -2039,7 +2039,31 @@ void MotorInterface::CommProcess()
         }
         cycle_command_ = park_command_;
     }
-    else cycle_command_ = hold_command_;
+    else
+    {
+        // The bench fault latch must never chase a drifting joint.
+        // Abort new writes on excessive tracking deviation; physical
+        // torque remains uncertain in ERROR and must be supervised.
+        if (state_ == MotorInterfaceState::FAULT_HOLD)
+        {
+            for (size_t i = 0; i < MOTOR_COUNT; ++i)
+            {
+                const int32_t actual = cycle_feedback_.motors[i].position;
+                const int32_t goal = hold_command_.motors[i].target_position;
+                if (actual < 0 || actual > 4095 ||
+                    std::abs(actual - goal) > PARK_MAX_TRACKING_ERROR)
+                {
+                    ESP_LOGE(TAG, "FAULT_HOLD tracking fault id=%u actual=%ld goal=%ld",
+                        static_cast<unsigned>(motors_[i].GetID()),
+                        static_cast<long>(actual),
+                        static_cast<long>(goal));
+                    EnterError();
+                    return;
+                }
+            }
+        }
+        cycle_command_ = hold_command_;
+    }
     command_valid_ = true;
     ChangeControlValidity(true);
     output_inhibit_ = false;

@@ -38,6 +38,14 @@ Array order: ID11 Base, ID12 Shoulder Driving, ID13 Shoulder Driven, ID14 Elbow,
 - Failure during a partial shoulder-release state can leave physical Servo torque unknown. **Do not attempt active Home on an unsupported arm**. Review error recovery and mechanical support before enabling the gate.
 - Servo ON and Parking implementation, including their default safety gates, were not intentionally changed by this feature.
 
+## T=211 Home phase diagnostics (read-only)
+
+- Added `home_phase` (string) and `home_phase_code` (integer) to the existing T211 status response.
+- Initial values: `NOT_STARTED` and `0`. Values are retained after failure or interruption as last recorded step; `COMPLETED` (11) is recorded on successful HOME before returning to ARMED. An active HOME has `state=HOMING`.
+- Codes: 1 PREPARE, 2 MOVE_BASE, 3 RELEASE_SHOULDER, 4 MOVE_SHOULDER, 5 SETTLE_SHOULDER, 6 SET_SHOULDER_GOAL, 7 VERIFY_SHOULDER_GOAL, 8 VERIFY_SHOULDER_POSITION, 9 RESTORE_SHOULDER, 10 MOVE_ELBOW/MOVE_WRIST/MOVE_ROLL/MOVE_GRIPPER, 11 COMPLETED.
+- The snapshot is published at the start of each ServoTask Home iteration; phases can briefly lag an internal transition by one task iteration. When HOME is disabled, the phase remains NOT_STARTED unless an earlier HOME actually ran.
+- These diagnostics provide **software bookkeeping only**: neither a stage transition nor `COMPLETED` proves mechanical safety or live servo torque.
+
 ## Safety review — ID13 recovery and interrupted HOME
 
 The last confirmed ID13 torque command state is now tracked as `home_id13_last_verified` in `T=211`: `UNKNOWN`, `OFF`, or `ON`. This is **historical confirmation from the parameter FSM, not a real-time sensor reading**. `UNKNOWN` is the default at boot and at each new HOME. On successful ID13 release verification it becomes `OFF`; on successful restore verification it becomes `ON`. In a partial or failed transaction, do **not** infer actual state from the last value.

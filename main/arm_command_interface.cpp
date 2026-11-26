@@ -83,6 +83,19 @@ ArmCommandInterface::HandleJsonCommand(const char* json) {
             break;
         }
 
+// T=218: reserved supervised initialization request for future SBC-KCF.
+// Until real Homing + mechanical calibration + recovery coordination exists,
+// always reject: never ARM, move, write offsets, or claim initialized.
+if (t == 218.0)
+{
+    double cmd = 0.0;
+    if (!ReadFinite(root, "cmd", cmd) || cmd != 1.0)
+        result = CommandResult::INVALID_TARGET;
+    else
+        result = CommandResult::MOTOR_UNAVAILABLE;
+    break;
+}
+
 // T=215: explicit no-park Servo OFF bench request. This is NOT a
 // manufacturer park command and may allow gravity-driven motion.
 if (t == 215.0)

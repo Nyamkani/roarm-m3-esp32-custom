@@ -195,6 +195,13 @@ public:
     void RequestServoHome();
     MotorInterfaceState GetState() const { return state_public_.load(); }
     bool IsTorqueOffVerified() const { return torque_off_public_.load(); }
+    // Initialization completion is intentionally false until a future
+    // independently validated calibration/initialization coordinator exists.
+    // This is NOT inferred from an ARM, PARK, or HOME operation result.
+    bool IsInitializationComplete() const { return initialization_complete_.load(); }
+    bool CanExecuteMove() const {
+        return GetState() == MotorInterfaceState::ARMED && IsInitializationComplete();
+    }
     // Historical readback of the last confirmed ID13 torque state during HOME.
     // Not a real-time torque sensor; UNKNOWN if no confirmation exists.
     enum class HomeId13Verified : uint8_t { UNKNOWN, OFF, ON };
@@ -281,6 +288,8 @@ private:
     MotorInterfaceState state_ =
         MotorInterfaceState::INIT;
     std::atomic<MotorInterfaceState> state_public_{MotorInterfaceState::INIT};
+    // Fail-closed across reboot. Do not set true until calibration exists.
+    std::atomic<bool> initialization_complete_{false};
     enum class ServoRequest : uint8_t { NONE, ON, OFF, PARK, HOME };
     std::atomic<ServoRequest> servo_request_{ServoRequest::NONE};
     std::atomic<uint16_t> operation_snapshot_{0}; // operation in low byte, status in high byte

@@ -67,6 +67,7 @@ esp_err_t ST3215ParameterFSM::Begin(uint8_t id, Register reg,
     unlock_may_have_happened_ = false;
     failed_pending_relock_ = false;
     value_mismatch_ = false;
+    readback_retry_count_ = 0;
     error_ = ESP_OK; result_ = Result::BUSY;
     Next(Step::READ_RETURN_LEVEL);
     return ESP_OK;
@@ -338,6 +339,17 @@ void ST3215ParameterFSM::CompleteStep(const ST3215Response* response)
                      "RAM/EEPROM readback mismatch id=%u reg=%u actual=%u expected=%u",
                      static_cast<unsigned>(id_), static_cast<unsigned>(address_),
                      static_cast<unsigned>(actual), static_cast<unsigned>(expected));
+            if (storage_ == Storage::RAM &&
+                readback_retry_count_ < MAX_READBACK_RETRIES)
+            {
+                ++readback_retry_count_;
+                ESP_LOGW(TAG,
+                         "Retrying RAM readback only id=%u reg=%u attempt=%u (no new write)",
+                         static_cast<unsigned>(id_), static_cast<unsigned>(address_),
+                         static_cast<unsigned>(readback_retry_count_));
+                Next(Step::READ_VALUE);
+                return;
+            }
             Fail(ESP_ERR_INVALID_RESPONSE);
         } else if (storage_ == Storage::EEPROM) {
             Next(Step::WRITE_LOCK);
@@ -373,7 +385,25 @@ ST3215ParameterFSM::Result ST3215ParameterFSM::Poll()
     ST3215Response response{};
     bool complete = false;
     const esp_err_t err = ReadReply(response, complete);
-    if (err != ESP_OK) Fail(err);
+    if (err != ESP_OK)
+    {
+        // A RAM register WRITE may have succeeded even if the following
+        // READ packet was malformed or delayed. Never resend the WRITE.
+        if (storage_ == Storage::RAM && step_ == Step::READ_VALUE &&
+            (err == ESP_ERR_INVALID_RESPONSE || err == ESP_ERR_TIMEOUT) &&
+            readback_retry_count_ < MAX_READBACK_RETRIES)
+        {
+            ++readback_retry_count_;
+            ESP_LOGW(TAG,
+                     "Retrying RAM readback only id=%u reg=%u attempt=%u err=%s (no new write)",
+                     static_cast<unsigned>(id_), static_cast<unsigned>(address_),
+                     static_cast<unsigned>(readback_retry_count_),
+                     esp_err_to_name(err));
+            Next(Step::READ_VALUE);
+        }
+        else
+            Fail(err);
+    }
     else if (complete) CompleteStep(&response);
     return result_;
 }

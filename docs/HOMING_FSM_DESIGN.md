@@ -38,6 +38,16 @@ Array order: ID11 Base, ID12 Shoulder Driving, ID13 Shoulder Driven, ID14 Elbow,
 - Failure during a partial shoulder-release state can leave physical Servo torque unknown. **Do not attempt active Home on an unsupported arm**. Review error recovery and mechanical support before enabling the gate.
 - Servo ON and Parking implementation, including their default safety gates, were not intentionally changed by this feature.
 
+## Safety review — ID13 recovery and interrupted HOME
+
+The last confirmed ID13 torque command state is now tracked as `home_id13_last_verified` in `T=211`: `UNKNOWN`, `OFF`, or `ON`. This is **historical confirmation from the parameter FSM, not a real-time sensor reading**. `UNKNOWN` is the default at boot and at each new HOME. On successful ID13 release verification it becomes `OFF`; on successful restore verification it becomes `ON`. In a partial or failed transaction, do **not** infer actual state from the last value.
+
+- HOMING no-park OFF interruptions inhibit position SYNC_WRITE while waiting for the ongoing UART1 transaction to finish. After communications become IDLE, the existing DISARMING path attempts OFF for all seven servos.
+- Failure to finish a parameter transaction (including timeout/comm error) transitions to ERROR with output inhibited. It **does not automatically clear torque or guarantee ID13 re-enable**. Manually support the arm, identify which physical torques remain enabled, then follow a separately approved recovery procedure.
+- `T=0` and `T=215` are not safety-rated emergency-stop mechanisms. In software ERROR, requests may not trigger a physical torque change.
+- A passed HOME preflight does not establish that lifting/releasing ID13 is safe with payload; ensure physical support and supervise first tests.
+- **Feature flag stays at `MOTOR_HOME_EXECUTION_ENABLE=0`.** No physical Home test is authorized by this document. Build and regression validation remain outstanding.
+
 ## Factory source reference
 
 Factory `RoArmM3_moveInit()` sequence:

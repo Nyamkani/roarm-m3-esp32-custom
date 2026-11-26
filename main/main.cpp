@@ -161,6 +161,7 @@ void HandleJsonLine(const char* json) {
             "\"physical_servo_enabled\":%s,"
             "\"torque_off_verified\":%s,"
             "\"initialization_complete\":%s,"
+            "\"calibration_valid\":%s,"
             "\"move_allowed\":%s,"
             "\"vendor_park_enabled\":%s,"
             "\"control_mode\":\"%s\"}\n",
@@ -178,6 +179,7 @@ void HandleJsonLine(const char* json) {
             MOTOR_PHYSICAL_SERVO_ENABLE ? "true" : "false",
             motor_interface.IsTorqueOffVerified() ? "true" : "false",
             motor_interface.IsInitializationComplete() ? "true" : "false",
+            motor_interface.IsCalibrationValid() ? "true" : "false",
             motor_interface.CanExecuteMove() ? "true" : "false",
             MOTOR_VENDOR_SHOULDER_PARK_ENABLE ? "true" : "false",
             MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION ? "POSITION" : "PWM"
@@ -186,6 +188,25 @@ void HandleJsonLine(const char* json) {
         return;
     }
 
+
+    // T=219: read-only initialization readiness status for SBC-KCF.
+    // Phase 1 has no calibration or initialization execution; fail closed.
+    if (cJSON_IsObject(root) &&
+        cJSON_IsNumber(type) &&
+        type->valuedouble == 219.0)
+    {
+        cJSON_Delete(root);
+        std::printf(
+            "{\"T\":219,\"initialization_status\":\"NOT_INITIALIZED\","
+            "\"initialization_complete\":%s,"
+            "\"calibration_valid\":%s,"
+            "\"move_allowed\":%s,"
+            "\"execution_enabled\":false}\n",
+            motor_interface.IsInitializationComplete() ? "true" : "false",
+            motor_interface.IsCalibrationValid() ? "true" : "false",
+            motor_interface.CanExecuteMove() ? "true" : "false");
+        return;
+    }
 
     // T=212: read-only POSITION hold preflight; no target publication.
     if (cJSON_IsObject(root) &&

@@ -230,6 +230,43 @@ void HandleJsonLine(const char* json) {
         return;
     }
 
+    // T=221: last completed, freshness-validated raw encoder readings.
+    // No new servo read request is made here. Only snapshot inspection.
+    if (cJSON_IsObject(root) &&
+        cJSON_IsNumber(type) &&
+        type->valuedouble == 221.0)
+    {
+        cJSON_Delete(root);
+        MotorFeedbackFrame raw{};
+        int64_t oldest_age_us = -1;
+        if (!motor_interface.GetRawEncoderSnapshot(raw, oldest_age_us))
+        {
+            std::puts("{\"T\":221,\"ok\":false,\"error\":\"raw_feedback_unavailable\"}");
+            return;
+        }
+        std::printf(
+            "{\"T\":221,\"ok\":true,\"servo_ids\":[11,12,13,14,15,16,17],"
+            "\"positions\":[%d,%d,%d,%d,%d,%d,%d],"
+            "\"velocities\":[%d,%d,%d,%d,%d,%d,%d],"
+            "\"oldest_age_us\":%lld}\n",
+            static_cast<int>(raw.motors[0].position),
+            static_cast<int>(raw.motors[1].position),
+            static_cast<int>(raw.motors[2].position),
+            static_cast<int>(raw.motors[3].position),
+            static_cast<int>(raw.motors[4].position),
+            static_cast<int>(raw.motors[5].position),
+            static_cast<int>(raw.motors[6].position),
+            static_cast<int>(raw.motors[0].velocity),
+            static_cast<int>(raw.motors[1].velocity),
+            static_cast<int>(raw.motors[2].velocity),
+            static_cast<int>(raw.motors[3].velocity),
+            static_cast<int>(raw.motors[4].velocity),
+            static_cast<int>(raw.motors[5].velocity),
+            static_cast<int>(raw.motors[6].velocity),
+            static_cast<long long>(oldest_age_us));
+        return;
+    }
+
     // T=212: read-only POSITION hold preflight; no target publication.
     if (cJSON_IsObject(root) &&
         cJSON_IsNumber(type) &&

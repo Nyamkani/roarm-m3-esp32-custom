@@ -127,6 +127,14 @@ enum class MotorInterfaceState : uint8_t
     ERROR
 };
 
+// Read-only operation lifecycle. This is diagnostic bookkeeping, not a safety-rated stop.
+enum class MotorOperation : uint8_t { NONE = 0, PARK = 1 };
+enum class MotorOperationStatus : uint8_t { IDLE = 0, RUNNING = 1, COMPLETED = 2, INTERRUPTED = 3, FAILED = 4 };
+struct MotorOperationSnapshot {
+    MotorOperation operation;
+    MotorOperationStatus status;
+};
+
 enum class MotorCommState : uint8_t
 {
     IDLE,
@@ -177,6 +185,11 @@ public:
     void RequestServoPark();
     MotorInterfaceState GetState() const { return state_public_.load(); }
     bool IsTorqueOffVerified() const { return torque_off_public_.load(); }
+    MotorOperationSnapshot GetOperationSnapshot() const {
+        const uint16_t packed = operation_snapshot_.load();
+        return {static_cast<MotorOperation>(packed & 0xffu),
+                static_cast<MotorOperationStatus>((packed >> 8) & 0xffu)};
+    }
 
 private:
     static void MainTask(void* arg);
@@ -253,6 +266,11 @@ private:
     std::atomic<MotorInterfaceState> state_public_{MotorInterfaceState::INIT};
     enum class ServoRequest : uint8_t { NONE, ON, OFF, PARK };
     std::atomic<ServoRequest> servo_request_{ServoRequest::NONE};
+    std::atomic<uint16_t> operation_snapshot_{0}; // operation in low byte, status in high byte
+    void SetOperationSnapshot(MotorOperation operation, MotorOperationStatus status) {
+        operation_snapshot_.store(static_cast<uint16_t>(operation) |
+            (static_cast<uint16_t>(status) << 8));
+    }
 
     MotorCommState comm_state_ =
         MotorCommState::IDLE;

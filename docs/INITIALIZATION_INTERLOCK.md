@@ -55,3 +55,20 @@ Only T211 and T219 are sent by default. T218 check is opt-in and must never be r
 - No physical movement, offset calibration writes, NVS persistence, or change to HOME/PARK targets has been added.
 - Read-only Python smoke (after flashing this build): `python3 tools/calibration_readonly_smoke.py --port /dev/ttyUSB0 --expect-state DISARMED`. Sends only T211, T219, T220.
 - Compilation and on-device verification for these new changes remain pending until locally tested.
+
+## Raw encoder diagnostics — T=221
+
+`{"T":221}` reads the most recent complete seven-servo feedback snapshot,
+without creating a new ST3215 UART transaction. It returns servo IDs
+11..17, their raw encoder positions, signed raw velocities and the age in
+microseconds of the oldest sample. If snapshot acquisition, freshness or
+position bounds checks fail, it returns `raw_feedback_unavailable`.
+The values are **raw servo counts, not calibrated mechanical joint angles**.
+A fresh raw position is not proof of correct home or mechanical zero.
+
+After a VS Code ESP-IDF build and flash, with stationary arm:
+`python3 tools/raw_encoder_readonly_smoke.py --port /dev/ttyUSB0 --expect-state DISARMED`
+
+The smoke script sends only T211/T221. No new calibration write path, NVS,
+servo EEPROM modification, HOME execution or MOVE permission is added.
+Build and hardware verification of these changes are pending user test.

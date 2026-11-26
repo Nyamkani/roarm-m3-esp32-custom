@@ -1480,6 +1480,11 @@ bool MotorInterface::TryEnterHomeFaultHold(const MotorFeedbackFrame& feedback)
 
 bool MotorInterface::TryEnterHomeFaultHoldFromSnapshot()
 {
+    // Snapshot is from the last fully completed cycle, not the current
+    // PROCESS-stage in-progress frame. The explicit abort path waits for
+    // the ongoing UART/feedback cycle to finish before using it.
+    if (comm_state_ != MotorCommState::IDLE)
+        return false;
     SharedSnapshotFrame<MotorFeedbackFrame> snapshot{};
     return GetFeedbackFrame(snapshot) &&
         TryEnterHomeFaultHold(snapshot.data);

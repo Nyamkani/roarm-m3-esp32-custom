@@ -18,6 +18,7 @@
 #include "pid.h"
 #include "joint_mapper.h"
 #include "calibration_data.h"
+#include "home_safety_config.h"
 
 
 #include "gpio_config.h"
@@ -208,6 +209,11 @@ public:
         return calibration_data_.mechanical_reference_verified &&
                arm_calibration::IsStructurallyValid(calibration_data_);
     }
+    bool IsHomeDeveloperMode() const { return MOTOR_HOME_DEVELOPMENT_MODE != 0; }
+    bool AreHomeLimitsVerified() const { return home_safety::AllLimitsVerified(); }
+    bool IsFaultHoldOutputEnabled() const { return MOTOR_FAULT_HOLD_OUTPUT_ENABLE != 0; }
+    // Latched diagnostic on ERROR entry. Not an active stop or torque proof.
+    uint32_t GetHomeFaultDiagnostic() const { return home_fault_diagnostic_.load(); }
     bool CanExecuteMove() const {
         return GetState() == MotorInterfaceState::ARMED &&
                IsInitializationComplete() && IsCalibrationValid();
@@ -400,6 +406,9 @@ private:
     bool home_stop_pending_ = false;
     std::atomic<HomeId13Verified> home_id13_verified_{HomeId13Verified::UNKNOWN};
     std::atomic<uint16_t> home_progress_snapshot_{0};
+    // bit0=last failure happened in HOMING, bit1=fresh feedback at failure,
+    // bit2=ID13 last verified OFF, bits8..15=HomePhase+1, bits16..23=ID13 verification.
+    std::atomic<uint32_t> home_fault_diagnostic_{0};
     uint8_t home_stage_ = 0;
     uint8_t home_stable_count_ = 0;
     uint16_t home_shoulder_goal_ = 0;

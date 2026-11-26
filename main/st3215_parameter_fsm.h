@@ -53,10 +53,11 @@ private:
         WRITE_UNLOCK, READ_UNLOCK, WRITE_VALUE, READ_VALUE,
         WRITE_LOCK, READ_LOCK, DONE
     };
-    enum class IO : uint8_t { NOT_SENT, WAIT_REPLY, NO_REPLY_WAIT };
+    enum class IO : uint8_t { NOT_SENT, WAIT_REPLY, DRAIN_OPTIONAL_WRITE_ACK };
 
     esp_err_t SendStep();
     esp_err_t ReadReply(ST3215Response& response, bool& complete);
+    esp_err_t DrainOptionalWriteAck(bool& complete);
     void CompleteStep(const ST3215Response* response);
     void Fail(esp_err_t error);
     void Next(Step step);
@@ -85,7 +86,16 @@ private:
     size_t rx_size_ = 0;
     size_t expected_rx_size_ = 0;
     uint8_t expected_params_ = 0;
-    static constexpr int64_t RESPONSE_TIMEOUT_US = 3000;
+    static constexpr int64_t RESPONSE_TIMEOUT_US = 5000;
+    // Return level 1 may still produce a WRITE status packet. Keep the
+    // UART exclusively owned while any delayed ACK bytes settle.
+    static constexpr int64_t WRITE_ACK_GUARD_US = 4000;
+    static constexpr int64_t WRITE_ACK_QUIET_US = 1500;
+    static constexpr int64_t WRITE_ACK_MAX_DRAIN_US = 12000;
+    int64_t ack_last_rx_us_ = 0;
+    size_t ack_discarded_bytes_ = 0;
+    uint8_t initial_read_retry_count_ = 0;
+    static constexpr uint8_t MAX_INITIAL_READ_RETRIES = 1;
     bool value_mismatch_ = false;
     // Retry only the readback after a completed RAM WRITE; never replay WRITE.
     uint8_t readback_retry_count_ = 0;

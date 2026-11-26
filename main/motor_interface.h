@@ -54,6 +54,8 @@
 // The factory-style parking procedure temporarily releases shoulder ID13.
 // This requires separate supervised mechanical validation before use.
 #define MOTOR_VENDOR_SHOULDER_PARK_ENABLE 0 // temporarily locked after ID12/13 mismatch during real park
+// Explicitly gated: actual Home motion has NOT passed physical safety validation.
+#define MOTOR_HOME_EXECUTION_ENABLE 0
 
 #if MOTOR_CONTROL_MODE != MOTOR_CONTROL_PWM && \
     MOTOR_CONTROL_MODE != MOTOR_CONTROL_POSITION
@@ -122,13 +124,14 @@ enum class MotorInterfaceState : uint8_t
     ARMING,
     ARMED,
     PARKING,
+    HOMING,
     DISARMING,
     BOOT_RECOVERY,
     ERROR
 };
 
 // Read-only operation lifecycle. This is diagnostic bookkeeping, not a safety-rated stop.
-enum class MotorOperation : uint8_t { NONE = 0, PARK = 1 };
+enum class MotorOperation : uint8_t { NONE = 0, PARK = 1, HOME = 2 };
 enum class MotorOperationStatus : uint8_t { IDLE = 0, RUNNING = 1, COMPLETED = 2, INTERRUPTED = 3, FAILED = 4 };
 struct MotorOperationSnapshot {
     MotorOperation operation;
@@ -183,6 +186,7 @@ public:
     void RequestServoOn();
     void RequestServoOff();
     void RequestServoPark();
+    void RequestServoHome();
     MotorInterfaceState GetState() const { return state_public_.load(); }
     bool IsTorqueOffVerified() const { return torque_off_public_.load(); }
     MotorOperationSnapshot GetOperationSnapshot() const {
@@ -264,7 +268,7 @@ private:
     MotorInterfaceState state_ =
         MotorInterfaceState::INIT;
     std::atomic<MotorInterfaceState> state_public_{MotorInterfaceState::INIT};
-    enum class ServoRequest : uint8_t { NONE, ON, OFF, PARK };
+    enum class ServoRequest : uint8_t { NONE, ON, OFF, PARK, HOME };
     std::atomic<ServoRequest> servo_request_{ServoRequest::NONE};
     std::atomic<uint16_t> operation_snapshot_{0}; // operation in low byte, status in high byte
     void SetOperationSnapshot(MotorOperation operation, MotorOperationStatus status) {
@@ -301,6 +305,7 @@ private:
     void StateArming();
     void StateArmed();
     void StateParking();
+    void StateHoming();
     void StateDisarming();
     void StateError();
     bool PollTorque(bool enabled, bool verify_only);
@@ -338,6 +343,25 @@ private:
     bool PollArmPositionChecks();
     bool PollParkShoulder(bool enabled);
     bool IsParkStageServo(size_t index) const;
+    bool IsHomeStageServo(size_t index) const;
+    enum class HomePhase : uint8_t {
+        PREPARE, MOVE_BASE, RELEASE_SHOULDER, MOVE_SHOULDER,
+        SET_SHOULDER_GOAL, VERIFY_SHOULDER_GOAL,
+        VERIFY_SHOULDER_POSITION, RESTORE_SHOULDER, MOVE_REST
+    };
+    HomePhase home_phase_ = HomePhase::PREPARE;
+    MotorCommandFrame home_command_{};
+    bool home_command_initialized_ = false;
+    bool home_busy_ = false;
+    bool home_stop_pending_ = false;
+    uint8_t home_stage_ = 0;
+    uint8_t home_stable_count_ = 0;
+    uint16_t home_shoulder_goal_ = 0;
+    int64_t home_start_us_ = 0;
+    int64_t home_last_goal_us_ = 0;
+    static constexpr int64_t HOME_TIMEOUT_US = 20000000;
+    static constexpr int16_t HOME_GOALS[MOTOR_COUNT] =
+        {2047, 2047, -1, 2047, 2047, 2047, 2047};
 
     void CommIdle();
     void CommSendRequest();

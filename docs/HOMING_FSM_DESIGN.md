@@ -1,3 +1,31 @@
+## ST3215 UART parameter transaction synchronization (experimental)
+
+After three consecutive PARK -> HOME attempts, the second run showed
+malformed response headers during all-servo Torque OFF, often with a
+leading byte matching the checksum of a previous WRITE status frame.
+Another run completed. The exact physical cause remains unproven.
+
+The parameter FSM now:
+
+- For Return Level 1 writes, waits at least 4 ms, drains any received
+  optional/delayed WRITE-status bytes, and requires at least 1.5 ms of
+  receive quiet; total drain is bounded at 12 ms. This is **not** a
+  guarantee that arbitrarily late ACKs cannot occur.
+- Increases parameter READ response timeout from 3 ms to 5 ms.
+- Permits a single read-only retry for a malformed/timed-out initial
+  parameter READ. Existing RAM post-WRITE readback retry remains one.
+- Never repeats a Torque/Goal WRITE on these retries and never bypasses
+  the returned register value comparison.
+- Enters ERROR when the bounded drain / retries still fail.
+
+The UART parameter FSM remains a **single-owner, fail-closed** design.
+All HOME goals, Parking targets, and movement FSM ordering remain
+unchanged. No build or hardware run has been verified for this change.
+A supported arm and physical supply isolation are required before any
+further powered testing.
+
+---
+
 ## Supervised PARK -> FULL HOME physical test configuration (temporary)
 
 The `feature/homing-fsm-gated` branch now has

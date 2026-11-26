@@ -250,6 +250,9 @@ void HandleJsonLine(const char* json) {
             "\"joint_limits_verified\":%s,"
             "\"fault_hold_output_enabled\":%s,"
             "\"fault_hold_bench_enabled\":true,"
+            "\"home_execution_enabled\":%s,"
+            "\"full_home_execution_enabled\":%s,"
+            "\"home_safe_fault_hold_enabled\":%s,"
             "\"fault_recorded\":%s,"
             "\"feedback_fresh_at_fault\":%s,"
             "\"id13_last_verified_off_at_fault\":%s,"
@@ -258,6 +261,9 @@ void HandleJsonLine(const char* json) {
             motor_interface.IsHomeDeveloperMode() ? "true" : "false",
             motor_interface.AreHomeLimitsVerified() ? "true" : "false",
             motor_interface.IsFaultHoldOutputEnabled() ? "true" : "false",
+            motor_interface.IsHomeExecutionEnabled() ? "true" : "false",
+            motor_interface.IsFullHomeExecutionEnabled() ? "true" : "false",
+            motor_interface.IsHomeSafeFaultHoldEnabled() ? "true" : "false",
             fault_recorded ? "true" : "false",
             feedback_was_fresh ? "true" : "false",
             id13_last_off ? "true" : "false",
@@ -377,6 +383,43 @@ void HandleJsonLine(const char* json) {
             static_cast<int>(target.motors[4].target_position),
             static_cast<int>(target.motors[5].target_position),
             static_cast<int>(target.motors[6].target_position));
+        return;
+    }
+
+    // T=229: read-only HOME goal tracking and fault-hold status.
+    if (cJSON_IsObject(root) && cJSON_IsNumber(type) &&
+        type->valuedouble == 229.0)
+    {
+        cJSON_Delete(root);
+        MotorCommandFrame home{};
+        const bool target_valid = motor_interface.GetHomeTargets(home);
+        const auto status = motor_interface.GetFaultHoldStatus();
+        const char* fault_status = status == MotorInterface::FaultHoldStatus::IDLE ? "IDLE" :
+            status == MotorInterface::FaultHoldStatus::REQUESTED ? "REQUESTED" :
+            status == MotorInterface::FaultHoldStatus::WRITE_SENT ? "WRITE_SENT" :
+            status == MotorInterface::FaultHoldStatus::STABLE ? "STABLE" : "FAILED";
+        const auto operation = motor_interface.GetOperationSnapshot();
+        const uint16_t progress = motor_interface.GetHomeProgressSnapshot();
+        std::printf(
+            "{\"T\":229,\"state\":\"%s\",\"operation\":\"%s\","
+            "\"operation_status\":\"%s\",\"home_phase_code\":%u,"
+            "\"home_stage\":%u,\"home_target_valid\":%s,"
+            "\"home_targets\":[%d,%d,%d,%d,%d,%d,%d],"
+            "\"fault_hold_status\":\"%s\"}\n",
+            MotorStateToString(motor_interface.GetState()),
+            OperationToString(operation.operation),
+            OperationStatusToString(operation.status),
+            static_cast<unsigned>(progress & 0xffu),
+            static_cast<unsigned>((progress >> 8) & 0xffu),
+            target_valid ? "true" : "false",
+            static_cast<int>(home.motors[0].target_position),
+            static_cast<int>(home.motors[1].target_position),
+            static_cast<int>(home.motors[2].target_position),
+            static_cast<int>(home.motors[3].target_position),
+            static_cast<int>(home.motors[4].target_position),
+            static_cast<int>(home.motors[5].target_position),
+            static_cast<int>(home.motors[6].target_position),
+            fault_status);
         return;
     }
 

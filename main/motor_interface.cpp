@@ -220,7 +220,7 @@ bool MotorInterface::PreviewPositionHome(MotorCommandFrame& home)
     {
         const int32_t position = snapshot.data.motors[i].position;
         const int32_t velocity = snapshot.data.motors[i].velocity;
-        if (position < 0 || position > 4095 ||
+        if (!home_safety::CheckRawJointLimit(i, position) ||
             velocity < -kMaxAbsSpeed || velocity > kMaxAbsSpeed)
             return false;
         if (i == 1 || i == 2) shoulder_sum += position;
@@ -232,6 +232,9 @@ bool MotorInterface::PreviewPositionHome(MotorCommandFrame& home)
         {2047, 2047, -1, 2047, 2047, 2047, 2047};
     for (size_t i = 0; i < MOTOR_COUNT; ++i)
     {
+        if (kHomeGoals[i] >= 0 &&
+            !home_safety::CheckRawJointLimit(i, kHomeGoals[i]))
+            return false;
         home.motors[i].target_position = kHomeGoals[i];
         home.motors[i].target_velocity = 0;
         home.motors[i].output = 0;
@@ -1332,7 +1335,9 @@ void MotorInterface::StateHoming()
         {
             const int32_t pos = snapshot.data.motors[i].position;
             const int32_t vel = snapshot.data.motors[i].velocity;
-            if (pos < 0 || pos > 4095 || std::abs(vel) > 50)
+            if (!home_safety::CheckRawJointLimit(i, pos) || std::abs(vel) > 50 ||
+                (HOME_GOALS[i] >= 0 &&
+                 !home_safety::CheckRawJointLimit(i, HOME_GOALS[i])))
             { EnterError(); return; }
             home_command_.motors[i].target_position = static_cast<int16_t>(pos);
             if (i == 1 || i == 2) shoulder_sum += pos;
@@ -1782,7 +1787,10 @@ void MotorInterface::CommProcess()
                 if (HOME_GOALS[i] < 0) continue;
                 const int32_t error = static_cast<int32_t>(home_command_.motors[i].target_position) -
                     static_cast<int32_t>(cycle_feedback_.motors[i].position);
-                if (std::abs(error) > PARK_MAX_TRACKING_ERROR) { EnterError(); return; }
+                if (!home_safety::CheckRawJointLimit(i, cycle_feedback_.motors[i].position) ||
+                    !home_safety::CheckRawJointLimit(i, home_command_.motors[i].target_position) ||
+                    std::abs(error) > PARK_MAX_TRACKING_ERROR)
+                { EnterError(); return; }
             }
             const bool moving = home_phase_ == HomePhase::MOVE_BASE ||
                 home_phase_ == HomePhase::MOVE_SHOULDER ||
@@ -1797,7 +1805,10 @@ void MotorInterface::CommProcess()
                     const int32_t step = std::clamp(
                         static_cast<int32_t>(HOME_GOALS[i]) - last,
                         -PARK_STEP_COUNTS, PARK_STEP_COUNTS);
-                    home_command_.motors[i].target_position = static_cast<int16_t>(last + step);
+                    const int32_t next = last + step;
+                    if (!home_safety::CheckRawJointLimit(i, next))
+                    { EnterError(); return; }
+                    home_command_.motors[i].target_position = static_cast<int16_t>(next);
                 }
             }
             cycle_command_ = home_command_;
@@ -2299,6 +2310,21 @@ void MotorInterface::EnterError()
         esp_err_to_name(parameter_fsm_.GetError())
     );
         
+    // Capture diagnostic BEFORE EnterError invalidates feedback snapshots.
+    // Never attempt to send a new goal here: UART/ID13 torque may be uncertain.
+    if (state_ == MotorInterfaceState::HOMING)
+    {
+        SharedSnapshotFrame<MotorFeedbackFrame> feedback{};
+        const bool feedback_fresh = GetFeedbackFrame(feedback) &&
+            ValidateFeedback(feedback.data, esp_timer_get_time());
+        const uint32_t id13 = static_cast<uint32_t>(home_id13_verified_.load());
+        const uint32_t phase = static_cast<uint32_t>(home_phase_) + 1u;
+        home_fault_diagnostic_.store(
+            1u | (feedback_fresh ? 2u : 0u) |
+            (id13 == static_cast<uint32_t>(HomeId13Verified::OFF) ? 4u : 0u) |
+            (phase << 8) | (id13 << 16));
+    }
+
     // PID reset is handled once by EnterState(ERROR).
 
 #if MOTOR_PERF_LOG_ENABLE

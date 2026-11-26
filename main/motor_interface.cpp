@@ -585,6 +585,7 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             break;
         case MotorInterfaceState::HOMING:
             home_phase_ = HomePhase::PREPARE;
+            home_progress_snapshot_.store(1u); // PREPARE, stage 0
             home_command_ = {};
             home_command_initialized_ = false;
             home_busy_ = false;
@@ -1219,6 +1220,9 @@ bool MotorInterface::IsHomeStageServo(size_t index) const
 void MotorInterface::StateHoming()
 {
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_HOME_EXECUTION_ENABLE && MOTOR_TORQUE_WRITE_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE
+    // A single ServoTask owns HomePhase and home_stage_. Publish a packed
+    // consistent read-only diagnostic snapshot before working this iteration.
+    PublishHomeProgress();
     if (servo_request_.exchange(ServoRequest::NONE) == ServoRequest::OFF)
         home_stop_pending_ = true;
 
@@ -1314,6 +1318,7 @@ void MotorInterface::StateHoming()
                         static_cast<int16_t>(pos);
                 }
                 ESP_LOGI(TAG, "HOME completed; new current pose captured for hold");
+                home_progress_snapshot_.store(11u); // COMPLETED, stage 0
                 ChangeState(MotorInterfaceState::ARMED);
             }
             return;

@@ -167,6 +167,48 @@ bool MotorInterface::PreviewPositionArm(MotorCommandFrame& hold)
 #endif
 }
 
+bool MotorInterface::PreviewPositionHome(MotorCommandFrame& home)
+{
+    home = {};
+#if MOTOR_CONTROL_MODE != MOTOR_CONTROL_POSITION
+    return false;
+#else
+    if (GetState() != MotorInterfaceState::ARMED)
+        return false;
+
+    SharedSnapshotFrame<MotorFeedbackFrame> snapshot{};
+    if (!GetFeedbackFrame(snapshot) ||
+        !ValidateFeedback(snapshot.data, esp_timer_get_time()))
+        return false;
+
+    // Require a stationary, mechanically coupled shoulder before a future
+    // active Home sequence may release ID13. No servo writes here.
+    constexpr int32_t kMaxAbsSpeed = 50;
+    int32_t shoulder_sum = 0;
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        const int32_t position = snapshot.data.motors[i].position;
+        const int32_t velocity = snapshot.data.motors[i].velocity;
+        if (position < 0 || position > 4095 ||
+            velocity < -kMaxAbsSpeed || velocity > kMaxAbsSpeed)
+            return false;
+        if (i == 1 || i == 2) shoulder_sum += position;
+    }
+    if (std::abs(shoulder_sum - 4094) > PARK_SHOULDER_COUPLING_TOLERANCE)
+        return false;
+
+    constexpr int16_t kHomeGoals[MOTOR_COUNT] =
+        {2047, 2047, -1, 2047, 2047, 2047, 2047};
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        home.motors[i].target_position = kHomeGoals[i];
+        home.motors[i].target_velocity = 0;
+        home.motors[i].output = 0;
+    }
+    return true;
+#endif
+}
+
 bool MotorInterface::GetJointFeedback(
     JointAngles& actual)
 {

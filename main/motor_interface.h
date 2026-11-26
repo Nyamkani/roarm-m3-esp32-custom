@@ -51,7 +51,7 @@
 #define MOTOR_CONTROL_MODE MOTOR_CONTROL_POSITION
 
 // 실물 POSITION 명령 출력은 별도로 허용
-#define MOTOR_POSITION_OUTPUT_ENABLE 1 // SUPERVISED BENCH: hold and park only
+#define MOTOR_POSITION_OUTPUT_ENABLE 1 // SUPERVISED BENCH: hold, park and scoped base-only HOME
 #define MOTOR_PHYSICAL_SERVO_ENABLE 1 // SUPERVISED BENCH: explicit physical enable
 // The factory-style parking procedure temporarily releases shoulder ID13.
 // This requires separate supervised mechanical validation before use.

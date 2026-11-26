@@ -230,6 +230,38 @@ void HandleJsonLine(const char* json) {
         return;
     }
 
+    // T=222: read-only HOME safety policy and latched fault diagnostic.
+    // A fault snapshot is historical, not permission to re-enable torque.
+    if (cJSON_IsObject(root) &&
+        cJSON_IsNumber(type) &&
+        type->valuedouble == 222.0)
+    {
+        cJSON_Delete(root);
+        const uint32_t fault = motor_interface.GetHomeFaultDiagnostic();
+        const bool fault_recorded = (fault & 1u) != 0u;
+        const bool feedback_was_fresh = (fault & 2u) != 0u;
+        const bool id13_last_off = (fault & 4u) != 0u;
+        const unsigned fault_phase = static_cast<unsigned>((fault >> 8) & 0xffu);
+        const unsigned id13_state = static_cast<unsigned>((fault >> 16) & 0xffu);
+        std::printf(
+            "{\"T\":222,\"development_mode\":%s,"
+            "\"joint_limits_verified\":%s,"
+            "\"fault_hold_output_enabled\":%s,"
+            "\"fault_recorded\":%s,"
+            "\"feedback_fresh_at_fault\":%s,"
+            "\"id13_last_verified_off_at_fault\":%s,"
+            "\"fault_home_phase_code\":%u,"
+            "\"fault_id13_last_verified_code\":%u}\n",
+            motor_interface.IsHomeDeveloperMode() ? "true" : "false",
+            motor_interface.AreHomeLimitsVerified() ? "true" : "false",
+            motor_interface.IsFaultHoldOutputEnabled() ? "true" : "false",
+            fault_recorded ? "true" : "false",
+            feedback_was_fresh ? "true" : "false",
+            id13_last_off ? "true" : "false",
+            fault_phase, id13_state);
+        return;
+    }
+
     // T=221: last completed, freshness-validated raw encoder readings.
     // No new servo read request is made here. Only snapshot inspection.
     if (cJSON_IsObject(root) &&

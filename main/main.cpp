@@ -191,6 +191,23 @@ void HandleJsonLine(const char* json) {
     }
 
 
+    // T=230: last verified read-only boot scan; bit 0=ID11, bit 6=ID17.
+    // A scan with invalid communication or mismatched passes is not trusted.
+    if (cJSON_IsObject(root) && cJSON_IsNumber(type) &&
+        type->valuedouble == 230.0)
+    {
+        cJSON_Delete(root);
+        std::printf(
+            "{\"T\":230,\"scan_verified\":%s,"
+            "\"torque_on_mask\":%u,\"mode_mismatch_mask\":%u,"
+            "\"servo_ids\":[11,12,13,14,15,16,17],"
+            "\"torque_state_current\":false}\n",
+            motor_interface.IsBootTorqueScanVerified() ? "true" : "false",
+            static_cast<unsigned>(motor_interface.GetBootTorqueOnMask()),
+            static_cast<unsigned>(motor_interface.GetBootModeMismatchMask()));
+        return;
+    }
+
     // T=219: read-only initialization readiness status for SBC-KCF.
     // Phase 1 has no calibration or initialization execution; fail closed.
     if (cJSON_IsObject(root) &&

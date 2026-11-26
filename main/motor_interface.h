@@ -189,6 +189,10 @@ public:
     void RequestServoHome();
     MotorInterfaceState GetState() const { return state_public_.load(); }
     bool IsTorqueOffVerified() const { return torque_off_public_.load(); }
+    // Historical readback of the last confirmed ID13 torque state during HOME.
+    // Not a real-time torque sensor; UNKNOWN if no confirmation exists.
+    enum class HomeId13Verified : uint8_t { UNKNOWN, OFF, ON };
+    HomeId13Verified GetHomeId13LastVerified() const { return home_id13_verified_.load(); }
     MotorOperationSnapshot GetOperationSnapshot() const {
         const uint16_t packed = operation_snapshot_.load();
         return {static_cast<MotorOperation>(packed & 0xffu),
@@ -354,6 +358,7 @@ private:
     bool home_command_initialized_ = false;
     bool home_busy_ = false;
     bool home_stop_pending_ = false;
+    std::atomic<HomeId13Verified> home_id13_verified_{HomeId13Verified::UNKNOWN};
     uint8_t home_stage_ = 0;
     uint8_t home_stable_count_ = 0;
     uint16_t home_shoulder_goal_ = 0;

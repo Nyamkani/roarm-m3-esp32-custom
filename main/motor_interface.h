@@ -195,6 +195,14 @@ public:
     void RequestServoOff();
     void RequestServoPark();
     void RequestServoHome();
+    // Explicit supervised in-place Hold test; never runs in ERROR or HOMING.
+    bool RequestCurrentHoldTest();
+    enum class HoldTestStatus : uint8_t {
+        IDLE, PENDING, CAPTURED, WRITE_SENT, FEEDBACK_STABLE, REJECTED, FAILED
+    };
+    HoldTestStatus GetHoldTestStatus() const { return hold_test_status_.load(); }
+    bool GetHoldTestTarget(MotorCommandFrame& out) const;
+
     MotorInterfaceState GetState() const { return state_public_.load(); }
     bool IsTorqueOffVerified() const { return torque_off_public_.load(); }
     // Initialization completion is intentionally false until a future
@@ -313,7 +321,10 @@ private:
     std::atomic<bool> calibration_valid_{false};
     // No trusted calibration input path or persistence yet. Starts empty.
     const arm_calibration::CalibrationData calibration_data_{};
-    enum class ServoRequest : uint8_t { NONE, ON, OFF, PARK, HOME };
+    enum class ServoRequest : uint8_t { NONE, ON, OFF, PARK, HOME, HOLD_TEST };
+    std::atomic<HoldTestStatus> hold_test_status_{HoldTestStatus::IDLE};
+    MotorCommandFrame hold_test_target_{};
+    uint8_t hold_test_stable_cycles_ = 0;
     std::atomic<ServoRequest> servo_request_{ServoRequest::NONE};
     std::atomic<uint16_t> operation_snapshot_{0}; // operation in low byte, status in high byte
     void SetOperationSnapshot(MotorOperation operation, MotorOperationStatus status) {

@@ -385,6 +385,9 @@ public:
     // Not a physical torque safety guarantee.
     bool PreviewPositionArm(MotorCommandFrame& hold);
 
+    // Read-only Home preflight. Does not change goal, calibration, or servo state.
+    bool PreviewPositionHome(MotorCommandFrame& home);
+
 private:
     MotorFeedbackFrame cycle_feedback_{};
     MotorCommandFrame cycle_command_{};

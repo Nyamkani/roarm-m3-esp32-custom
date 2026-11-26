@@ -4,6 +4,14 @@
 >
 > **상태:** 현재 소스 코드에서 확인된 명령과 응답을 기술합니다. 예시 응답의 위치/상태 값은 설명용이며 실제 측정값이 아닙니다. **Home은 T=217로 구현되어 있으나 기본 비활성화(실기 미검증) 상태입니다. Pause / Resume / Protective Stop / Calibration은 미구현이며 명령 번호도 배정하지 않았습니다.**
 
+## 2026-11-27 — Initialization protocol scaffold (feature/homing-fsm-gated)
+
+- `T=218,cmd=1`: reserved future SBC-KCF initialization request. **Always rejected** with `{"ok":false,"status":"motor_unavailable"}` in the present firmware. No HOME, calibration or torque write occurs.
+- `T=219`: read-only initialization status. Currently returns `initialization_status="NOT_INITIALIZED"`, `initialization_complete=false`, `calibration_valid=false`, `move_allowed=false`, `execution_enabled=false`.
+- `T=211` also exposes `initialization_complete`, `calibration_valid`, and `move_allowed`.
+- Initialization coordinator, calibration and automatic progression remain **unimplemented**. No flag is set true on ARM/HOME/PARK. The ESP32 retains authority to reject general MOVE.
+- Local test: `python3 tools/init_protocol_smoke.py --port /dev/ttyUSB0 --expect-state DISARMED`; optional refusal test `--check-rejection` only with the known disabled implementation.
+
 ## 1. Transport and message framing
 
 - **Host ↔ ESP32:** UART0 표준 콘솔 (stdin/stdout), **115200 bps**, JSON 객체 한 줄(\n 또는 \r) 단위. 한 행에 하나의 JSON 요청을 넣습니다.

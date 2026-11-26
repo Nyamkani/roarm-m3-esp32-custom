@@ -345,7 +345,7 @@ private:
     bool IsParkStageServo(size_t index) const;
     bool IsHomeStageServo(size_t index) const;
     enum class HomePhase : uint8_t {
-        PREPARE, MOVE_BASE, RELEASE_SHOULDER, MOVE_SHOULDER,
+        PREPARE, MOVE_BASE, RELEASE_SHOULDER, MOVE_SHOULDER, SETTLE_SHOULDER,
         SET_SHOULDER_GOAL, VERIFY_SHOULDER_GOAL,
         VERIFY_SHOULDER_POSITION, RESTORE_SHOULDER, MOVE_REST
     };
@@ -358,8 +358,9 @@ private:
     uint8_t home_stable_count_ = 0;
     uint16_t home_shoulder_goal_ = 0;
     int64_t home_start_us_ = 0;
+    int64_t home_shoulder_settle_us_ = 0;
     int64_t home_last_goal_us_ = 0;
-    static constexpr int64_t HOME_TIMEOUT_US = 20000000;
+    static constexpr int64_t HOME_TIMEOUT_US = 90000000;
     static constexpr int16_t HOME_GOALS[MOTOR_COUNT] =
         {2047, 2047, -1, 2047, 2047, 2047, 2047};
 

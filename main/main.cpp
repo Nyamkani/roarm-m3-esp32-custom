@@ -65,6 +65,14 @@ const char* OperationToString(MotorOperation operation) {
     }
 }
 
+const char* HomeId13VerifiedToString(MotorInterface::HomeId13Verified state) {
+    switch (state) {
+        case MotorInterface::HomeId13Verified::OFF: return "OFF";
+        case MotorInterface::HomeId13Verified::ON: return "ON";
+        default: return "UNKNOWN";
+    }
+}
+
 const char* OperationStatusToString(MotorOperationStatus status) {
     switch (status) {
         case MotorOperationStatus::IDLE: return "IDLE";
@@ -115,6 +123,7 @@ void HandleJsonLine(const char* json) {
             "\"motion_state\":\"%s\","
             "\"operation\":\"%s\","
             "\"operation_status\":\"%s\","
+            "\"home_id13_last_verified\":\"%s\","
             "\"feedback_valid\":%s,"
             "\"torque_write_enabled\":%s,"
             "\"pwm_output_enabled\":%s,"
@@ -127,6 +136,7 @@ void HandleJsonLine(const char* json) {
             motion_state,
             OperationToString(operation.operation),
             OperationStatusToString(operation.status),
+            HomeId13VerifiedToString(motor_interface.GetHomeId13LastVerified()),
             feedback_valid ? "true" : "false",
             MOTOR_TORQUE_WRITE_ENABLE ? "true" : "false",
             MOTOR_PWM_OUTPUT_ENABLE ? "true" : "false",

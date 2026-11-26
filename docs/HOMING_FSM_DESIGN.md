@@ -130,3 +130,33 @@ Before implementing active fault hold: define UART transaction ownership
 during ERROR, fresh feedback reacquisition, the ID13 torque-off special case,
 hold goal readback, post-write verification, and fallback without accidental
 torque release. Keep ERROR latched and refuse normal MOVE throughout.
+
+## Supervised hardware test: explicit in-place CURRENT POSITION Hold (T223/T224)
+
+This test is **physically active**, but intentionally does NOT inject an
+error, drive to a new position, enable Homing or release shoulder ID13 torque.
+
+- Precondition: manually supervised, mechanically supported stationary arm
+  **already in ARMED**, with fresh feedback for all 7 servos, raw values in
+  0..4095, velocities within ±50, coupled shoulder sum within 4094±64.
+  Opening a USB serial port can reset the MCU and change its servo state.
+- `{"T":223,"cmd":1}` queues a current-pose recapture. The ServoTask
+  performs the checks and replaces `hold_command_` with the seven *actual*
+  raw positions. Existing ARMED cycle then sends the new goals using
+  the already enabled ST3215 SYNC_WRITE position path.
+- `{"T":224}` reads `status` and `targets`. Status sequence:
+  IDLE → PENDING → CAPTURED → WRITE_SENT → FEEDBACK_STABLE.
+  Ten post-write feedback cycles must be within 10 raw counts of goals and
+  at most 50 raw velocity units. A successful UART transmit is not proof
+  of physical torque or safety-rated motion cessation. No command EEPROM
+  or mechanical calibration changes occur.
+- Command stays unavailable in DISARMED, HOMING, PARKING or ERROR;
+  it does not enable ordinary MOVE or circumvent initialization interlocks.
+- Run, after VS Code ESP-IDF extension build/flash and independently
+  supervised ARM, with physical arm stable:
+  `python3 tools/current_hold_hardware_smoke.py --port /dev/ttyUSB0`.
+  The script refuses to issue T223 unless T211 reports ARMED.
+- `MOTOR_HOME_EXECUTION_ENABLE=0` and `MOTOR_FAULT_HOLD_OUTPUT_ENABLE=0`
+  remain unchanged. **Actual Hold during ERROR and ID13 torque-off
+  recovery remain unimplemented and unverified.** Never deliberately
+  break UART or unplug an active loaded arm to simulate an error.

@@ -374,7 +374,14 @@ private:
     int64_t home_start_us_ = 0;
     int64_t home_shoulder_settle_us_ = 0;
     int64_t home_last_goal_us_ = 0;
-    static constexpr int64_t HOME_TIMEOUT_US = 90000000;
+    // Stage watchdog: reset on HomePhase or MOVE_REST joint change.
+    HomePhase home_watchdog_phase_ = HomePhase::PREPARE;
+    uint8_t home_watchdog_stage_ = 0;
+    int64_t home_watchdog_start_us_ = 0;
+    static constexpr int64_t HOME_MAX_TOTAL_US = 480000000; // 8 min hard upper bound
+    static constexpr int64_t HOME_MOVE_STAGE_TIMEOUT_US = 90000000; // 90 s per joint
+    static constexpr int64_t HOME_PARAMETER_TIMEOUT_US = 5000000; // 5 s
+    static constexpr int64_t HOME_SETTLE_TIMEOUT_US = 3000000; // 3 s
     static constexpr int16_t HOME_GOALS[MOTOR_COUNT] =
         {2047, 2047, -1, 2047, 2047, 2047, 2047};
 

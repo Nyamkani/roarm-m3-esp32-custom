@@ -590,6 +590,7 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             home_busy_ = false;
             park_busy_ = false; // PollParkShoulder transaction helper
             home_stop_pending_ = false;
+            home_id13_verified_.store(HomeId13Verified::UNKNOWN);
             home_stage_ = 0;
             home_stable_count_ = 0;
             home_shoulder_goal_ = 0;
@@ -1240,14 +1241,16 @@ void MotorInterface::StateHoming()
             ProcessCommunicationFSM();
             return;
         }
-        ESP_LOGW(TAG, "HOME interrupted by explicit no-park Servo OFF request");
+        ESP_LOGW(TAG, "HOME interrupted by explicit no-park Servo OFF request; ID13 last-verified=%u (not live)",
+            static_cast<unsigned>(home_id13_verified_.load()));
         ChangeState(MotorInterfaceState::DISARMING);
         return;
     }
 
     if (esp_timer_get_time() - home_start_us_ > HOME_TIMEOUT_US)
     {
-        ESP_LOGE(TAG, "HOME timeout; servo states may be partially enabled");
+        ESP_LOGE(TAG, "HOME timeout; ID13 last-verified=%u (not live); servo states may be partially enabled",
+            static_cast<unsigned>(home_id13_verified_.load()));
         EnterError();
         return;
     }
@@ -1337,6 +1340,7 @@ void MotorInterface::StateHoming()
     {
         if (PollParkShoulder(false))
         {
+            home_id13_verified_.store(HomeId13Verified::OFF);
             home_phase_ = HomePhase::MOVE_SHOULDER;
             ChangeCommState(MotorCommState::IDLE);
             last_comm_cycle_us_ = 0;
@@ -1402,6 +1406,7 @@ void MotorInterface::StateHoming()
     {
         if (PollParkShoulder(true))
         {
+            home_id13_verified_.store(HomeId13Verified::ON);
             home_stage_ = 0;
             home_stable_count_ = 0;
             home_phase_ = HomePhase::MOVE_REST;
@@ -1997,7 +2002,8 @@ void MotorInterface::CommSyncWrite()
         (state_ != MotorInterfaceState::ARMED &&
          state_ != MotorInterfaceState::PARKING &&
          state_ != MotorInterfaceState::HOMING) ||
-        (servo_request_.load() == ServoRequest::OFF || park_stop_pending_) ||
+        (servo_request_.load() == ServoRequest::OFF || park_stop_pending_ ||
+         home_stop_pending_) ||
         !command_valid_ ||
         output_inhibit_)
     {

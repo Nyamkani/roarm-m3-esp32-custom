@@ -58,6 +58,11 @@
 #define MOTOR_VENDOR_SHOULDER_PARK_ENABLE 0 // temporarily locked after ID12/13 mismatch during real park
 // Explicitly gated: actual Home motion has NOT passed physical safety validation.
 #define MOTOR_HOME_EXECUTION_ENABLE 0
+// Independent opt-in for releasing shoulder ID13 and running the full route.
+#define MOTOR_HOME_ALLOW_FULL_EXECUTION 0
+// Only for deterministic HOME logic faults with verified ID13 torque ON,
+// fresh feedback and idle/PROCESS UART ownership. Never for UART faults.
+#define MOTOR_HOME_SAFE_FAULT_HOLD_ENABLE 1
 // Compile Home FSM internals without accepting T217 or transitioning into HOMING.
 #define MOTOR_HOME_COMPILE_CHECK 1
 
@@ -196,6 +201,22 @@ public:
     void RequestServoOff();
     void RequestServoPark();
     void RequestServoHome();
+    // One-stage physical HOME and full HOME require separate explicit scope.
+    enum class HomeScope : uint8_t { BASE_ONLY, FULL };
+    bool RequestServoHomeScoped(HomeScope scope);
+    bool RequestHomeHoldAbort();
+    bool IsHomeExecutionEnabled() const { return MOTOR_HOME_EXECUTION_ENABLE != 0; }
+    bool IsFullHomeExecutionEnabled() const {
+        return MOTOR_HOME_EXECUTION_ENABLE && MOTOR_HOME_ALLOW_FULL_EXECUTION;
+    }
+    bool IsHomeSafeFaultHoldEnabled() const {
+        return MOTOR_HOME_SAFE_FAULT_HOLD_ENABLE != 0;
+    }
+    // Read-only diagnostic: current commanded HOME positions during execution.
+    bool GetHomeTargets(MotorCommandFrame& out) {
+        return home_target_snapshot_.ReadData(out);
+    }
+
     // Explicit supervised in-place Hold test; never runs in ERROR or HOMING.
     bool RequestCurrentHoldTest();
     // Supervised simulated fault, accepted only from stationary ARMED.
@@ -333,7 +354,8 @@ private:
     // No trusted calibration input path or persistence yet. Starts empty.
     const arm_calibration::CalibrationData calibration_data_{};
     enum class ServoRequest : uint8_t {
-        NONE, ON, OFF, PARK, HOME, HOLD_TEST, FAULT_HOLD_TEST, FAULT_HOLD_RESUME
+        NONE, ON, OFF, PARK, HOME, HOME_HOLD_ABORT,
+        HOLD_TEST, FAULT_HOLD_TEST, FAULT_HOLD_RESUME
     };
     std::atomic<FaultHoldStatus> fault_hold_status_{FaultHoldStatus::IDLE};
     SharedSnapshot<MotorCommandFrame> fault_hold_target_snapshot_{};
@@ -430,6 +452,12 @@ private:
             (static_cast<uint16_t>(home_stage_) << 8));
     }
     MotorCommandFrame home_command_{};
+    SharedSnapshot<MotorCommandFrame> home_target_snapshot_{};
+    HomeScope home_scope_requested_ = HomeScope::BASE_ONLY;
+    HomeScope home_scope_active_ = HomeScope::BASE_ONLY;
+    bool home_abort_hold_pending_ = false;
+    bool TryEnterHomeFaultHold(const MotorFeedbackFrame& feedback);
+    bool TryEnterHomeFaultHoldFromSnapshot();
     bool home_command_initialized_ = false;
     bool home_busy_ = false;
     bool home_stop_pending_ = false;

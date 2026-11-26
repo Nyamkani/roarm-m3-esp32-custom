@@ -1638,9 +1638,28 @@ void MotorInterface::StateHoming()
                     if (!GetFeedbackFrame(snapshot) ||
                         !ValidateFeedback(snapshot.data, esp_timer_get_time()))
                     { EnterError(); return; }
+                    const int32_t shoulder_sum =
+                        static_cast<int32_t>(snapshot.data.motors[1].position) +
+                        static_cast<int32_t>(snapshot.data.motors[2].position);
+                    if (std::abs(shoulder_sum - 4094) >
+                        PARK_SHOULDER_COUPLING_TOLERANCE)
+                    {
+                        if (!TryEnterHomeFaultHoldFromSnapshot())
+                            EnterError();
+                        return;
+                    }
                     for (size_t i = 0; i < MOTOR_COUNT; ++i)
-                        hold_command_.motors[i].target_position =
-                            snapshot.data.motors[i].position;
+                    {
+                        const auto& fb = snapshot.data.motors[i];
+                        if (!home_safety::CheckRawJointLimit(i, fb.position) ||
+                            std::abs(static_cast<int32_t>(fb.velocity)) > 50)
+                        {
+                            if (!TryEnterHomeFaultHoldFromSnapshot())
+                                EnterError();
+                            return;
+                        }
+                        hold_command_.motors[i].target_position = fb.position;
+                    }
                     home_progress_snapshot_.store(11u);
                     ESP_LOGI(TAG, "BASE_ONLY HOME completed without ID13 torque release");
                     ChangeState(MotorInterfaceState::ARMED);

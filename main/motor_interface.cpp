@@ -1432,7 +1432,8 @@ bool MotorInterface::IsHomeStageServo(size_t index) const
     return false;
 }
 
-bool MotorInterface::TryEnterHomeFaultHold(const MotorFeedbackFrame& feedback)
+bool MotorInterface::TryEnterHomeFaultHold(const MotorFeedbackFrame& feedback,
+                                          bool operator_abort)
 {
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_HOME_SAFE_FAULT_HOLD_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE
     // No write while parameter FSM or a servo communication cycle owns UART1.
@@ -1467,18 +1468,26 @@ bool MotorInterface::TryEnterHomeFaultHold(const MotorFeedbackFrame& feedback)
     fault_hold_target_snapshot_.Write(hold_command_);
     fault_hold_status_.store(FaultHoldStatus::REQUESTED);
     fault_hold_bench_test_ = false; // No T226 resume after real HOME abort/fault.
-    // Explicitly retain HOME operation outcome before changing states.
-    SetOperationSnapshot(MotorOperation::HOME, MotorOperationStatus::INTERRUPTED);
+    const uint32_t id13 = static_cast<uint32_t>(home_id13_verified_.load());
+    const uint32_t phase = static_cast<uint32_t>(home_phase_) + 1u;
+    home_fault_diagnostic_.store(
+        1u | 2u | (id13 == static_cast<uint32_t>(HomeId13Verified::OFF) ? 4u : 0u) |
+        (phase << 8) | (id13 << 16));
+    // Operator-requested abort is INTERRUPTED; detected HOME faults FAILED.
+    SetOperationSnapshot(MotorOperation::HOME,
+        operator_abort ? MotorOperationStatus::INTERRUPTED :
+                         MotorOperationStatus::FAILED);
     ChangeState(MotorInterfaceState::FAULT_HOLD);
     ESP_LOGW(TAG, "HOME transitioned to latched FAULT_HOLD; ID13 verified ON");
     return true;
 #else
     (void)feedback;
+    (void)operator_abort;
     return false;
 #endif
 }
 
-bool MotorInterface::TryEnterHomeFaultHoldFromSnapshot()
+bool MotorInterface::TryEnterHomeFaultHoldFromSnapshot(bool operator_abort)
 {
     // Snapshot is from the last fully completed cycle, not the current
     // PROCESS-stage in-progress frame. The explicit abort path waits for
@@ -1487,7 +1496,7 @@ bool MotorInterface::TryEnterHomeFaultHoldFromSnapshot()
         return false;
     SharedSnapshotFrame<MotorFeedbackFrame> snapshot{};
     return GetFeedbackFrame(snapshot) &&
-        TryEnterHomeFaultHold(snapshot.data);
+        TryEnterHomeFaultHold(snapshot.data, operator_abort);
 }
 
 void MotorInterface::StateHoming()
@@ -1507,7 +1516,7 @@ void MotorInterface::StateHoming()
         output_inhibit_ = true;
         // Never interrupt UART parameter transactions. If ID13 is OFF or
         // status/feedback is uncertain, fail closed without asserting hold.
-        if (TryEnterHomeFaultHoldFromSnapshot())
+        if (TryEnterHomeFaultHoldFromSnapshot(true))
             return;
         if (home_busy_ || park_busy_ ||
             home_id13_verified_.load() != HomeId13Verified::ON)

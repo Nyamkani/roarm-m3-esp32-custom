@@ -481,8 +481,14 @@ private:
     static constexpr int64_t HOME_MOVE_STAGE_TIMEOUT_US = 90000000; // 90 s per joint
     static constexpr int64_t HOME_PARAMETER_TIMEOUT_US = 5000000; // 5 s
     static constexpr int64_t HOME_SETTLE_TIMEOUT_US = 3000000; // 3 s
+    // User-verified physical HOME pose from seven raw ST3215 encoders.
+    // This is a pose reference, separate from vendor PARK goals.
+    static constexpr int16_t HOME_REFERENCE_RAW[MOTOR_COUNT] =
+        {2043, 1703, 2386, 2927, 1549, 2048, 2046};
+    // ID13 is mechanically coupled and must NOT be driven while torque OFF.
     static constexpr int16_t HOME_GOALS[MOTOR_COUNT] =
-        {2047, 2047, -1, 2047, 2047, 2047, 2047};
+        {2043, 1703, -1, 2927, 1549, 2048, 2046};
+    static constexpr int32_t HOME_ID13_REFERENCE_TOLERANCE = 20;
 
     void CommIdle();
     void CommSendRequest();

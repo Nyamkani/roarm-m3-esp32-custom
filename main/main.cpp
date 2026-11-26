@@ -160,6 +160,8 @@ void HandleJsonLine(const char* json) {
             "\"position_output_enabled\":%s,"
             "\"physical_servo_enabled\":%s,"
             "\"torque_off_verified\":%s,"
+            "\"initialization_complete\":%s,"
+            "\"move_allowed\":%s,"
             "\"vendor_park_enabled\":%s,"
             "\"control_mode\":\"%s\"}\n",
             MotorStateToString(state),
@@ -175,6 +177,8 @@ void HandleJsonLine(const char* json) {
             MOTOR_POSITION_OUTPUT_ENABLE ? "true" : "false",
             MOTOR_PHYSICAL_SERVO_ENABLE ? "true" : "false",
             motor_interface.IsTorqueOffVerified() ? "true" : "false",
+            motor_interface.IsInitializationComplete() ? "true" : "false",
+            motor_interface.CanExecuteMove() ? "true" : "false",
             MOTOR_VENDOR_SHOULDER_PARK_ENABLE ? "true" : "false",
             MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION ? "POSITION" : "PWM"
         );

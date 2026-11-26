@@ -219,6 +219,10 @@ public:
     // Read-only, last observed Home step. 0=NOT_STARTED, 1..10=HomePhase+1,
     // 11=COMPLETED. Lower byte=phase, upper byte=rest stage (0..3).
     uint16_t GetHomeProgressSnapshot() const { return home_progress_snapshot_.load(); }
+    // Read-only copy of the last complete seven-servo feedback cycle.
+    // No UART request, command publication, calibration or EEPROM write.
+    bool GetRawEncoderSnapshot(MotorFeedbackFrame& out, int64_t& oldest_age_us);
+
     MotorOperationSnapshot GetOperationSnapshot() const {
         const uint16_t packed = operation_snapshot_.load();
         return {static_cast<MotorOperation>(packed & 0xffu),

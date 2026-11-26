@@ -133,6 +133,7 @@ enum class MotorInterfaceState : uint8_t
     ARMED,
     PARKING,
     HOMING,
+    FAULT_HOLD,
     DISARMING,
     BOOT_RECOVERY,
     ERROR
@@ -197,6 +198,16 @@ public:
     void RequestServoHome();
     // Explicit supervised in-place Hold test; never runs in ERROR or HOMING.
     bool RequestCurrentHoldTest();
+    // Supervised simulated fault, accepted only from stationary ARMED.
+    bool RequestFaultHoldBenchTest();
+    bool RequestFaultHoldBenchResume();
+    enum class FaultHoldStatus : uint8_t {
+        IDLE, REQUESTED, WRITE_SENT, STABLE, FAILED
+    };
+    FaultHoldStatus GetFaultHoldStatus() const { return fault_hold_status_.load(); }
+    bool GetFaultHoldTarget(MotorCommandFrame& out) {
+        return fault_hold_target_snapshot_.ReadData(out);
+    }
     enum class HoldTestStatus : uint8_t {
         IDLE, PENDING, CAPTURED, WRITE_SENT, FEEDBACK_STABLE, REJECTED, FAILED
     };
@@ -321,7 +332,13 @@ private:
     std::atomic<bool> calibration_valid_{false};
     // No trusted calibration input path or persistence yet. Starts empty.
     const arm_calibration::CalibrationData calibration_data_{};
-    enum class ServoRequest : uint8_t { NONE, ON, OFF, PARK, HOME, HOLD_TEST };
+    enum class ServoRequest : uint8_t {
+        NONE, ON, OFF, PARK, HOME, HOLD_TEST, FAULT_HOLD_TEST, FAULT_HOLD_RESUME
+    };
+    std::atomic<FaultHoldStatus> fault_hold_status_{FaultHoldStatus::IDLE};
+    SharedSnapshot<MotorCommandFrame> fault_hold_target_snapshot_{};
+    uint8_t fault_hold_stable_cycles_ = 0;
+    bool fault_hold_bench_test_ = false;
     std::atomic<HoldTestStatus> hold_test_status_{HoldTestStatus::IDLE};
     SharedSnapshot<MotorCommandFrame> hold_test_target_snapshot_{};
     uint8_t hold_test_stable_cycles_ = 0;
@@ -362,6 +379,7 @@ private:
     void StateArmed();
     void StateParking();
     void StateHoming();
+    void StateFaultHold();
     void StateDisarming();
     void StateError();
     bool PollTorque(bool enabled, bool verify_only);

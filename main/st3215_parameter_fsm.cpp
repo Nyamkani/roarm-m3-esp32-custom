@@ -126,6 +126,14 @@ void ST3215ParameterFSM::Next(Step step)
 }
 void ST3215ParameterFSM::Fail(esp_err_t error)
 {
+    ESP_LOGE(TAG,
+             "Parameter FSM failure id=%u reg=%u step=%u verify_only=%u "
+             "err=%s rx=%u/%u expected_params=%u",
+             static_cast<unsigned>(id_), static_cast<unsigned>(address_),
+             static_cast<unsigned>(step_), static_cast<unsigned>(verify_only_),
+             esp_err_to_name(error), static_cast<unsigned>(rx_size_),
+             static_cast<unsigned>(expected_rx_size_),
+             static_cast<unsigned>(expected_params_));
     if (error_ == ESP_OK) error_ = error;
     if (unlock_may_have_happened_ &&
         step_ != Step::WRITE_LOCK && step_ != Step::READ_LOCK) {
@@ -184,14 +192,35 @@ esp_err_t ST3215ParameterFSM::ReadReply(ST3215Response& response, bool& complete
             if (!expected_rx_size_) {
                 if (rx_[0] != 0xFF || rx_[1] != 0xFF || rx_[2] != id_ ||
                     rx_[3] != static_cast<uint8_t>(expected_params_ + 2))
+                {
+                    ESP_LOGE(TAG,
+                             "Bad response header id=%u step=%u "
+                             "bytes=%02X %02X %02X %02X expected_id=%u expected_len=%u",
+                             static_cast<unsigned>(id_), static_cast<unsigned>(step_),
+                             rx_[0], rx_[1], rx_[2], rx_[3],
+                             static_cast<unsigned>(id_),
+                             static_cast<unsigned>(expected_params_ + 2));
                     return ESP_ERR_INVALID_RESPONSE;
+                }
                 expected_rx_size_ = static_cast<size_t>(rx_[3]) + 4;
                 continue;
             }
             const esp_err_t err = ST3215::ParseResponse(
                 rx_.data(), rx_size_, id_, expected_params_, response);
-            if (err != ESP_OK) return err;
-            if (response.error != 0) return ESP_ERR_INVALID_RESPONSE;
+            if (err != ESP_OK)
+            {
+                ESP_LOGE(TAG, "Response parse rejected id=%u step=%u err=%s",
+                         static_cast<unsigned>(id_), static_cast<unsigned>(step_),
+                         esp_err_to_name(err));
+                return err;
+            }
+            if (response.error != 0)
+            {
+                ESP_LOGE(TAG, "Servo status error id=%u step=%u status=0x%02X",
+                         static_cast<unsigned>(id_), static_cast<unsigned>(step_),
+                         static_cast<unsigned>(response.error));
+                return ESP_ERR_INVALID_RESPONSE;
+            }
             complete = true;
             return ESP_OK;
         }
@@ -301,6 +330,14 @@ void ST3215ParameterFSM::CompleteStep(const ST3215Response* response)
     case Step::WRITE_VALUE: Next(Step::READ_VALUE); break;
     case Step::READ_VALUE:
         if (std::memcmp(response->params, desired_.data(), size_) != 0) {
+            const uint16_t actual = static_cast<uint16_t>(response->params[0]) |
+                (size_ == 2 ? static_cast<uint16_t>(response->params[1]) << 8 : 0);
+            const uint16_t expected = static_cast<uint16_t>(desired_[0]) |
+                (size_ == 2 ? static_cast<uint16_t>(desired_[1]) << 8 : 0);
+            ESP_LOGE(TAG,
+                     "RAM/EEPROM readback mismatch id=%u reg=%u actual=%u expected=%u",
+                     static_cast<unsigned>(id_), static_cast<unsigned>(address_),
+                     static_cast<unsigned>(actual), static_cast<unsigned>(expected));
             Fail(ESP_ERR_INVALID_RESPONSE);
         } else if (storage_ == Storage::EEPROM) {
             Next(Step::WRITE_LOCK);

@@ -160,3 +160,36 @@ error, drive to a new position, enable Homing or release shoulder ID13 torque.
   remain unchanged. **Actual Hold during ERROR and ID13 torque-off
   recovery remain unimplemented and unverified.** Never deliberately
   break UART or unplug an active loaded arm to simulate an error.
+
+## Supervised FAULT_HOLD bench step — T225/T226/T227
+
+This is a **real motor-output, software-simulated fault-latch test**, not
+an injected UART failure and not an automatic reaction to every HOME error.
+Never use on an unsupported, moving or unobserved arm.
+
+- With all seven servos already torque ON and `state=ARMED`, stationary,
+  fresh valid feedback and shoulder pair within 4094±64, `{"T":225,"cmd":1}`
+  asks the ServoTask to capture all seven CURRENT encoder positions and
+  transition to the dedicated `FAULT_HOLD` state. Other movement
+  commands are rejected by the state gate. The normal ServoTask UART1
+  feedback + SYNC_WRITE pipeline continues sending these captured goals.
+- `{"T":227}` exposes the historical goal set and
+  `REQUESTED → WRITE_SENT → STABLE` result. STABLE needs ten consecutive
+  feedback cycles within ±10 raw counts and ±50 raw velocity. This is NOT
+  proof of zero motion under load and is not a safety-rated emergency stop.
+- `{"T":226,"cmd":1}` explicitly returns a successful *bench-only* hold
+  to ARMED. The `tools/fault_hold_bench_smoke.py` utility leaves the arm
+  in FAULT_HOLD by default; `--resume` requests an explicit return after
+  STABLE. No automatic resume is performed.
+- `T=0` remains an explicit, potentially gravity-dangerous all-servo
+  torque release; it is NOT a safety-rated stop. Do not run this test
+  without a mechanical support and a planned recovery procedure.
+- **Real HOME failure behavior remains unchanged**: fatal communication,
+  invalid feedback and uncertain ID13 torque still enter ERROR, without
+  claiming a successful Hold. `MOTOR_HOME_EXECUTION_ENABLE=0`,
+  `MOTOR_FAULT_HOLD_OUTPUT_ENABLE=0`, calibration false and normal MOVE
+  blocked are still intact.
+- Verify firmware build/flash using VS Code ESP-IDF extension first;
+  source changes have not been built or hardware tested by assistant.
+  With supervised `ARMED`: `python3 tools/fault_hold_bench_smoke.py
+  --port /dev/ttyUSB0`.

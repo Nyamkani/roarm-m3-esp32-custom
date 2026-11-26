@@ -110,6 +110,28 @@ if (t == 215.0)
     break;
 }
 
+// T=217: gated Home execution request. No calibration writes.
+if (t == 217.0)
+{
+    double cmd = 0.0;
+    if (!ReadFinite(root, "cmd", cmd) || cmd != 1.0)
+    { result = CommandResult::INVALID_TARGET; break; }
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_HOME_EXECUTION_ENABLE && MOTOR_TORQUE_WRITE_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE
+    MotorCommandFrame preview{};
+    if (motor_.GetState() != MotorInterfaceState::ARMED ||
+        !motor_.PreviewPositionHome(preview))
+    { result = CommandResult::MOTOR_UNAVAILABLE; break; }
+    has_target_ = false;
+    last_command_us_ = 0;
+    last_publish_us_ = 0;
+    motor_.RequestServoHome();
+    result = CommandResult::ACCEPTED;
+#else
+    result = CommandResult::MOTOR_UNAVAILABLE;
+#endif
+    break;
+}
+
 // T=210: Servo Torque / ARM-DISARM control
 if (t == 210.0)
 {

@@ -55,11 +55,11 @@
 #define MOTOR_PHYSICAL_SERVO_ENABLE 1 // SUPERVISED BENCH: explicit physical enable
 // The factory-style parking procedure temporarily releases shoulder ID13.
 // This requires separate supervised mechanical validation before use.
-#define MOTOR_VENDOR_SHOULDER_PARK_ENABLE 0 // temporarily locked after ID12/13 mismatch during real park
+#define MOTOR_VENDOR_SHOULDER_PARK_ENABLE 1 // supervised PARK->HOME hardware test; requires arm support
 // Explicitly gated: actual Home motion has NOT passed physical safety validation.
 #define MOTOR_HOME_EXECUTION_ENABLE 1 // supervised BASE_ONLY physical test branch
 // Independent opt-in for releasing shoulder ID13 and running the full route.
-#define MOTOR_HOME_ALLOW_FULL_EXECUTION 0
+#define MOTOR_HOME_ALLOW_FULL_EXECUTION 1 // supervised FULL HOME; PARK-only preflight below
 // Only for deterministic HOME logic faults with verified ID13 torque ON,
 // fresh feedback and idle/PROCESS UART ownership. Never for UART faults.
 #define MOTOR_HOME_SAFE_FAULT_HOLD_ENABLE 1
@@ -502,6 +502,11 @@ private:
     static constexpr int16_t HOME_GOALS[MOTOR_COUNT] =
         {2043, 1703, -1, 2927, 1549, 2048, 2046};
     static constexpr int32_t HOME_ID13_REFERENCE_TOLERANCE = 20;
+    // Temporary physical test constraints: FULL HOME must begin at the
+    // verified vendor PARK pose, not from an arbitrary unknown pose.
+    static constexpr int32_t HOME_PARK_START_TOLERANCE = 40;
+    static constexpr int32_t HOME_SHOULDER_CORRIDOR_MARGIN = 30;
+    static constexpr int32_t HOME_PARK_ID13_RAW = 4094 - PARK_GOALS[1];
 
     void CommIdle();
     void CommSendRequest();

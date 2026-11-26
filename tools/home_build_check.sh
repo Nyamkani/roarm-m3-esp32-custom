@@ -15,7 +15,11 @@ if ! grep -Eq '^[[:space:]]*#[[:space:]]*define[[:space:]]+MOTOR_EEPROM_WRITE_EN
   echo "ERROR: EEPROM writes are not proven disabled." >&2
   exit 3
 fi
-echo "PASS: HOME execution gate OFF and EEPROM write OFF"
+if ! grep -Eq '^[[:space:]]*#[[:space:]]*define[[:space:]]+MOTOR_HOME_COMPILE_CHECK[[:space:]]+1([[:space:]]|$)' main/motor_interface.h; then
+  echo "ERROR: HOME internal compile-check is not enabled." >&2
+  exit 3
+fi
+echo "PASS: HOME execution gate OFF, internal FSM compile-check ON, EEPROM writes OFF"
 echo "Target: esp32 (RoArm-M3 ESP32-WROOM-32)"
 idf.py set-target esp32
 idf.py build

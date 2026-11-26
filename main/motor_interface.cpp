@@ -308,14 +308,12 @@ bool MotorInterface::PreviewPositionHome(MotorCommandFrame& home)
     if (std::abs(shoulder_sum - 4094) > PARK_SHOULDER_COUPLING_TOLERANCE)
         return false;
 
-    constexpr int16_t kHomeGoals[MOTOR_COUNT] =
-        {2047, 2047, -1, 2047, 2047, 2047, 2047};
     for (size_t i = 0; i < MOTOR_COUNT; ++i)
     {
-        if (kHomeGoals[i] >= 0 &&
-            !home_safety::CheckRawJointLimit(i, kHomeGoals[i]))
+        if (HOME_GOALS[i] >= 0 &&
+            !home_safety::CheckRawJointLimit(i, HOME_GOALS[i]))
             return false;
-        home.motors[i].target_position = kHomeGoals[i];
+        home.motors[i].target_position = HOME_GOALS[i];
         home.motors[i].target_velocity = 0;
         home.motors[i].output = 0;
     }
@@ -1742,7 +1740,9 @@ void MotorInterface::StateHoming()
             const int32_t id12 = snapshot.data.motors[1].position;
             const int32_t id13 = snapshot.data.motors[2].position;
             if (std::abs(id12 + id13 - 4094) > PARK_SHOULDER_COUPLING_TOLERANCE ||
-                std::abs(id12 - 2047) > 10 || std::abs(snapshot.data.motors[2].velocity) > 50 ||
+                std::abs(id12 - HOME_REFERENCE_RAW[1]) > 10 ||
+                std::abs(id13 - HOME_REFERENCE_RAW[2]) > HOME_ID13_REFERENCE_TOLERANCE ||
+                std::abs(snapshot.data.motors[2].velocity) > 50 ||
                 id13 < 0 || id13 > 4095)
             { EnterError(); return; }
             home_shoulder_goal_ = static_cast<uint16_t>(id13);

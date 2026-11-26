@@ -46,3 +46,12 @@ Optional T218 rejection check only after T219 reports execution_enabled=false:
 python3 tools/init_protocol_smoke.py --port /dev/ttyUSB0 --expect-state DISARMED --check-rejection
 
 Only T211 and T219 are sent by default. T218 check is opt-in and must never be run with firmware that supports actual initialization execution.
+## Calibration data model — read-only groundwork
+
+- `main/calibration_data.h`: schema version 1, seven ST3215 servo references (IDs 11..17), raw zero, sign, raw limits, and ID12/ID13 pair reference.
+- `IsStructurallyValid()` checks field ranges and pair consistency; it does not establish physical validity. Independent mechanical reference confirmation is required.
+- All stored values are initially unknown and the firmware cannot mark calibration valid.
+- `T=220` reports schema version 1, calibration_valid=false, record_verified=false, persisted=false, seven null references for zero, direction and raw limits, and shoulder_pair_sum_raw=null.
+- No physical movement, offset calibration writes, NVS persistence, or change to HOME/PARK targets has been added.
+- Read-only Python smoke (after flashing this build): `python3 tools/calibration_readonly_smoke.py --port /dev/ttyUSB0 --expect-state DISARMED`. Sends only T211, T219, T220.
+- Compilation and on-device verification for these new changes remain pending until locally tested.

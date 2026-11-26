@@ -95,6 +95,36 @@ bool MotorInterface::GetFeedbackFrame(
     return feedback_snapshot_.Read(out);
 }
 
+bool MotorInterface::GetRawEncoderSnapshot(
+    MotorFeedbackFrame& out, int64_t& oldest_age_us)
+{
+    out = {};
+    oldest_age_us = -1;
+
+    SharedSnapshotFrame<MotorFeedbackFrame> frame{};
+    if (!GetFeedbackFrame(frame))
+        return false;
+
+    const int64_t now_us = esp_timer_get_time();
+    if (!ValidateFeedback(frame.data, now_us))
+        return false;
+
+    int64_t maximum_age_us = 0;
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        const MotorFeedback& servo = frame.data.motors[i];
+        if (servo.position < 0 || servo.position > 4095)
+            return false;
+        const int64_t age_us = now_us - servo.timestamp_us;
+        if (age_us > maximum_age_us)
+            maximum_age_us = age_us;
+    }
+
+    out = frame.data;
+    oldest_age_us = maximum_age_us;
+    return true;
+}
+
 bool MotorInterface::PreparePositionHold(MotorCommandFrame& hold)
 {
     hold = {};

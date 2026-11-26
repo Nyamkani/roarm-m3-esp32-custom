@@ -262,6 +262,60 @@ void HandleJsonLine(const char* json) {
         return;
     }
 
+    // T=223: explicitly re-capture CURRENT raw position as Hold target.
+    // Available only in ARMED with fresh stationary feedback and paired
+    // shoulder. It does not ARM, HOME, calibrate, or enable ordinary MOVE.
+    if (cJSON_IsObject(root) && cJSON_IsNumber(type) &&
+        type->valuedouble == 223.0)
+    {
+        const cJSON* cmd = cJSON_GetObjectItemCaseSensitive(root, "cmd");
+        const bool valid_cmd = cJSON_IsNumber(cmd) && cmd->valuedouble == 1.0;
+        cJSON_Delete(root);
+        if (!valid_cmd)
+        {
+            std::puts("{\"T\":223,\"ok\":false,\"error\":\"invalid_command\"}");
+            return;
+        }
+        const bool accepted = motor_interface.RequestCurrentHoldTest();
+        std::printf("{\"T\":223,\"ok\":%s,\"status\":\"%s\"}\n",
+            accepted ? "true" : "false",
+            accepted ? "accepted" : "motor_unavailable");
+        return;
+    }
+
+    // T=224: read-only result of the explicit in-place Hold test.
+    if (cJSON_IsObject(root) && cJSON_IsNumber(type) &&
+        type->valuedouble == 224.0)
+    {
+        cJSON_Delete(root);
+        const auto status = motor_interface.GetHoldTestStatus();
+        const char* label = "UNKNOWN";
+        switch (status)
+        {
+            case MotorInterface::HoldTestStatus::IDLE: label = "IDLE"; break;
+            case MotorInterface::HoldTestStatus::PENDING: label = "PENDING"; break;
+            case MotorInterface::HoldTestStatus::CAPTURED: label = "CAPTURED"; break;
+            case MotorInterface::HoldTestStatus::WRITE_SENT: label = "WRITE_SENT"; break;
+            case MotorInterface::HoldTestStatus::FEEDBACK_STABLE: label = "FEEDBACK_STABLE"; break;
+            case MotorInterface::HoldTestStatus::REJECTED: label = "REJECTED"; break;
+            case MotorInterface::HoldTestStatus::FAILED: label = "FAILED"; break;
+        }
+        MotorCommandFrame target{};
+        const bool target_valid = motor_interface.GetHoldTestTarget(target);
+        std::printf(
+            "{\"T\":224,\"status\":\"%s\",\"target_valid\":%s,"
+            "\"targets\":[%d,%d,%d,%d,%d,%d,%d]}\n",
+            label, target_valid ? "true" : "false",
+            static_cast<int>(target.motors[0].target_position),
+            static_cast<int>(target.motors[1].target_position),
+            static_cast<int>(target.motors[2].target_position),
+            static_cast<int>(target.motors[3].target_position),
+            static_cast<int>(target.motors[4].target_position),
+            static_cast<int>(target.motors[5].target_position),
+            static_cast<int>(target.motors[6].target_position));
+        return;
+    }
+
     // T=221: last completed, freshness-validated raw encoder readings.
     // No new servo read request is made here. Only snapshot inspection.
     if (cJSON_IsObject(root) &&

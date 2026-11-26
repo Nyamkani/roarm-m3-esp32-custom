@@ -49,6 +49,33 @@ void MotorInterface::RequestServoOff() { servo_request_.store(ServoRequest::OFF)
 void MotorInterface::RequestServoPark() { servo_request_.store(ServoRequest::PARK); }
 void MotorInterface::RequestServoHome() { servo_request_.store(ServoRequest::HOME); }
 
+// This is a supervised stationary HOLD test, not general MOVE or
+// autonomous error recovery. The ServoTask owns all UART1 operations.
+bool MotorInterface::RequestCurrentHoldTest()
+{
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_POSITION_OUTPUT_ENABLE
+    if (GetState() != MotorInterfaceState::ARMED)
+        return false;
+    const auto old_status = hold_test_status_.load();
+    if (old_status == HoldTestStatus::PENDING ||
+        old_status == HoldTestStatus::CAPTURED ||
+        old_status == HoldTestStatus::WRITE_SENT)
+        return false;
+    ServoRequest expected = ServoRequest::NONE;
+    if (!servo_request_.compare_exchange_strong(expected, ServoRequest::HOLD_TEST))
+        return false;
+    hold_test_status_.store(HoldTestStatus::PENDING);
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool MotorInterface::GetHoldTestTarget(MotorCommandFrame& out)
+{
+    return hold_test_target_snapshot_.ReadData(out);
+}
+
 ST3215* MotorInterface::GetMotor(size_t index)
 {
     if (index >= MOTOR_COUNT)
@@ -1019,6 +1046,44 @@ void MotorInterface::StateArmed()
             ChangeState(MotorInterfaceState::DISARMING);
             return;
         }
+        if (request == ServoRequest::HOLD_TEST)
+        {
+            SharedSnapshotFrame<MotorFeedbackFrame> snapshot{};
+            const int64_t now_us = esp_timer_get_time();
+            bool valid = GetFeedbackFrame(snapshot) &&
+                ValidateFeedback(snapshot.data, now_us);
+            if (valid)
+            {
+                const int32_t sum = snapshot.data.motors[1].position +
+                    snapshot.data.motors[2].position;
+                if (std::abs(sum - 4094) > PARK_SHOULDER_COUPLING_TOLERANCE)
+                    valid = false;
+                for (size_t i = 0; i < MOTOR_COUNT && valid; ++i)
+                {
+                    const MotorFeedback& fb = snapshot.data.motors[i];
+                    if (fb.position < 0 || fb.position > 4095 ||
+                        std::abs(static_cast<int32_t>(fb.velocity)) > 50)
+                        valid = false;
+                }
+            }
+            if (!valid)
+            {
+                hold_test_status_.store(HoldTestStatus::REJECTED);
+                return;
+            }
+            for (size_t i = 0; i < MOTOR_COUNT; ++i)
+            {
+                hold_command_.motors[i].target_position =
+                    snapshot.data.motors[i].position;
+                hold_command_.motors[i].target_velocity = 0;
+                hold_command_.motors[i].output = 0;
+            }
+            hold_test_target_snapshot_.Write(hold_command_);
+            hold_test_stable_cycles_ = 0;
+            hold_test_status_.store(HoldTestStatus::CAPTURED);
+            ESP_LOGI(TAG, "In-place HOLD test captured current pose");
+            return;
+        }
         if (request == ServoRequest::HOME)
         {
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_HOME_EXECUTION_ENABLE && MOTOR_TORQUE_WRITE_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE
@@ -1609,6 +1674,7 @@ void MotorInterface::CommIdle()
 
     last_comm_cycle_us_ = now_us;
     current_motor_index_ = 0;
+    cycle_write_sent_ = false;
 
     comm_cycle_start_us_ = esp_timer_get_time();
     // A new cycle must not inherit valid flags
@@ -2152,6 +2218,30 @@ void MotorInterface::CommComplete()
     // All seven feedback responses were validated.
     feedback_snapshot_.Write(cycle_feedback_);
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION
+    if (state_ == MotorInterfaceState::ARMED)
+    {
+        const HoldTestStatus status = hold_test_status_.load();
+        if ((status == HoldTestStatus::CAPTURED ||
+             status == HoldTestStatus::WRITE_SENT) && cycle_write_sent_)
+        {
+            bool stable = true;
+            for (size_t i = 0; i < MOTOR_COUNT; ++i)
+            {
+                const int32_t diff =
+                    static_cast<int32_t>(hold_command_.motors[i].target_position) -
+                    static_cast<int32_t>(cycle_feedback_.motors[i].position);
+                const int32_t vel = cycle_feedback_.motors[i].velocity;
+                if (std::abs(diff) > 10 || std::abs(vel) > 50)
+                { stable = false; break; }
+            }
+            hold_test_stable_cycles_ = stable ?
+                static_cast<uint8_t>(std::min<int>(hold_test_stable_cycles_ + 1, 10)) : 0;
+            hold_test_status_.store(
+                hold_test_stable_cycles_ >= 10 ?
+                    HoldTestStatus::FEEDBACK_STABLE : HoldTestStatus::WRITE_SENT);
+        }
+    }
+
     if (state_ == MotorInterfaceState::HOMING && home_command_initialized_)
     {
         const bool moving = home_phase_ == HomePhase::MOVE_BASE ||
@@ -2310,6 +2400,11 @@ void MotorInterface::EnterError()
         esp_err_to_name(parameter_fsm_.GetError())
     );
         
+    if (hold_test_status_.load() == HoldTestStatus::PENDING ||
+        hold_test_status_.load() == HoldTestStatus::CAPTURED ||
+        hold_test_status_.load() == HoldTestStatus::WRITE_SENT)
+        hold_test_status_.store(HoldTestStatus::FAILED);
+
     // Capture diagnostic BEFORE EnterError invalidates feedback snapshots.
     // Never attempt to send a new goal here: UART/ID13 torque may be uncertain.
     if (state_ == MotorInterfaceState::HOMING)

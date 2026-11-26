@@ -208,6 +208,28 @@ void HandleJsonLine(const char* json) {
         return;
     }
 
+    // T=220: read-only calibration metadata; no inferred encoder zeros.
+    // A default-constructed record is unverified. No EEPROM/NVS/motion.
+    if (cJSON_IsObject(root) &&
+        cJSON_IsNumber(type) &&
+        type->valuedouble == 220.0)
+    {
+        cJSON_Delete(root);
+        std::printf(
+            "{\"T\":220,\"schema_version\":%lu,"
+            "\"calibration_valid\":%s,"
+            "\"record_verified\":%s,"
+            "\"persisted\":false,"
+            "\"zero_raw\":[null,null,null,null,null,null,null],"
+            "\"direction\":[null,null,null,null,null,null,null],"
+            "\"raw_limits\":[null,null,null,null,null,null,null],"
+            "\"shoulder_pair_sum_raw\":null}\n",
+            static_cast<unsigned long>(motor_interface.GetCalibrationSchemaVersion()),
+            motor_interface.IsCalibrationValid() ? "true" : "false",
+            motor_interface.HasVerifiedCalibrationRecord() ? "true" : "false");
+        return;
+    }
+
     // T=212: read-only POSITION hold preflight; no target publication.
     if (cJSON_IsObject(root) &&
         cJSON_IsNumber(type) &&

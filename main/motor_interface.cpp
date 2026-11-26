@@ -255,6 +255,13 @@ void MotorInterface::MainTask(void* arg)
 
 void MotorInterface::MainLoop()
 {
+    // This ServoTask is designed for a 1 ms FreeRTOS scheduling period.
+    // A 100 Hz tick would truncate pdMS_TO_TICKS(1) to zero and trigger
+    // the xTaskDelayUntil(xTimeIncrement > 0) assertion at runtime.
+    // Fail at build time instead of silently downsampling the control loop.
+    static_assert(pdMS_TO_TICKS(MOTOR_TASK_PERIOD_MS) > 0,
+                  "MotorInterface requires a nonzero FreeRTOS tick delay; set CONFIG_FREERTOS_HZ=1000");
+    constexpr TickType_t kTaskPeriodTicks = pdMS_TO_TICKS(MOTOR_TASK_PERIOD_MS);
     TickType_t last_wake_time = xTaskGetTickCount();
 
     while (!task_stop_.load())
@@ -271,7 +278,7 @@ void MotorInterface::MainLoop()
 
         xTaskDelayUntil(
             &last_wake_time,
-            pdMS_TO_TICKS(1)
+            kTaskPeriodTicks
         );
     }
 }

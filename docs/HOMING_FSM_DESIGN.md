@@ -93,3 +93,40 @@ Factory `RoArmM3_moveInit()` sequence:
 - Under `ARMED`, stable, coupled feedback should yield `dry_run:true` and goals above.
 - While feedback is stale/moving or shoulder is inconsistent, it should reject.
 - Repeat existing Servo ON / Parking / T211 regression; no output code changed in H0.
+
+## 2026-11-27: Joint limits / fault-hold preparation
+
+- `main/home_safety_config.h` provides configurable per-servo raw position
+  intervals with `configured` and `mechanically_verified` flags.
+  All limits start unconfigured. `MOTOR_HOME_DEVELOPMENT_MODE=1` bypasses
+  **only these missing mechanical limits**; raw validity, feedback age,
+  coupling, tracking, and HOME execution gates remain enforced.
+  For deployment set `MOTOR_HOME_DEVELOPMENT_MODE=0` and establish actual
+  verified physical limits before enabling any HOME operation.
+  No inferred 2047/2048 physical limits are adopted.
+- Homing preview, PREPARE, and Homing moving goal/feedback checks now use
+  the configurable limit predicate. This has not been tested on hardware.
+- `MOTOR_FAULT_HOLD_OUTPUT_ENABLE=0` is deliberately enforced by a
+  compile-time error if set to 1. **No active Current Position Hold on fault
+  has been implemented.** The reason: in the current ERROR path the UART
+  can be unreliable; ID13 can be torque-off; a goal overwrite alone is not a
+  verified physical hold and might generate an unsafe jump.
+- A historical HOMING ERROR diagnostic is latched before feedback
+  invalidation. The read-only `T=222` response includes
+  `development_mode`, `joint_limits_verified`,
+  `fault_hold_output_enabled`, `fault_recorded`,
+  `feedback_fresh_at_fault`, `id13_last_verified_off_at_fault`,
+  `fault_home_phase_code`, and `fault_id13_last_verified_code`.
+  Freshness reflects only the last captured snapshot, not a valid live
+  command channel or proof that recovery is safe.
+- Existing T=211 status fields, ordinary ARM/PARK behavior, and the
+  `MOTOR_HOME_EXECUTION_ENABLE=0` safety gate remain unchanged.
+- Local build and runtime checks have not yet been performed for this set
+  of modifications. After a VS Code ESP-IDF build/flash, with arm stationary:
+  `python3 tools/home_safety_readonly_smoke.py --port /dev/ttyUSB0 --expect-state DISARMED`
+  (sends T211 and T222 only).
+
+Before implementing active fault hold: define UART transaction ownership
+during ERROR, fresh feedback reacquisition, the ID13 torque-off special case,
+hold goal readback, post-write verification, and fallback without accidental
+torque release. Keep ERROR latched and refuse normal MOVE throughout.

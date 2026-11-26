@@ -453,7 +453,7 @@ private:
     }
     MotorCommandFrame home_command_{};
     SharedSnapshot<MotorCommandFrame> home_target_snapshot_{};
-    HomeScope home_scope_requested_ = HomeScope::BASE_ONLY;
+    std::atomic<HomeScope> home_scope_requested_{HomeScope::BASE_ONLY};
     HomeScope home_scope_active_ = HomeScope::BASE_ONLY;
     bool home_abort_hold_pending_ = false;
     bool TryEnterHomeFaultHold(const MotorFeedbackFrame& feedback);

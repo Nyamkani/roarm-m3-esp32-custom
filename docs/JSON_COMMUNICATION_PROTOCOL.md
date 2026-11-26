@@ -179,6 +179,7 @@ Servo ON 경로는 최신 피드백 기반 현재 위치 목표를 설정 → �
 | `motion_state` | string | **1차 파생 조회 필드**, 현재 독립 Motion FSM은 아님 |
 | `operation` | string | 현재/최근 작업: `NONE`, `PARK` |
 | `operation_status` | string | `IDLE`, `RUNNING`, `COMPLETED`, `INTERRUPTED`, `FAILED` |
+| `home_id13_last_verified` | string | `UNKNOWN`, `OFF`, `ON`: 마지막으로 확인된 HOME 중 ID13 Torque 명령 상태. **실시간 Servo Torque 증명 아님** |
 | `feedback_valid` | bool | `GetJointFeedback()` 성공 여부. 단순 UART/서보 수신 유효성만 나타내는 값이 아님 |
 | `torque_write_enabled` | bool | 컴파일 설정: Servo Torque 쓰기 허용 여부 |
 | `pwm_output_enabled` | bool | 컴파일 설정: PWM 출력 허용 여부 |

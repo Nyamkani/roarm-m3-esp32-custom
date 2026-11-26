@@ -49,6 +49,33 @@ void MotorInterface::RequestServoOff() { servo_request_.store(ServoRequest::OFF)
 void MotorInterface::RequestServoPark() { servo_request_.store(ServoRequest::PARK); }
 void MotorInterface::RequestServoHome() { servo_request_.store(ServoRequest::HOME); }
 
+bool MotorInterface::RequestServoHomeScoped(HomeScope scope)
+{
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_HOME_EXECUTION_ENABLE && MOTOR_TORQUE_WRITE_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE
+    if (GetState() != MotorInterfaceState::ARMED ||
+        (scope == HomeScope::FULL && !MOTOR_HOME_ALLOW_FULL_EXECUTION))
+        return false;
+    ServoRequest expected = ServoRequest::NONE;
+    home_scope_requested_.store(scope);
+    return servo_request_.compare_exchange_strong(expected, ServoRequest::HOME);
+#else
+    (void)scope;
+    return false;
+#endif
+}
+
+bool MotorInterface::RequestHomeHoldAbort()
+{
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_HOME_EXECUTION_ENABLE
+    if (GetState() != MotorInterfaceState::HOMING)
+        return false;
+    ServoRequest expected = ServoRequest::NONE;
+    return servo_request_.compare_exchange_strong(expected, ServoRequest::HOME_HOLD_ABORT);
+#else
+    return false;
+#endif
+}
+
 // This is a supervised stationary HOLD test, not general MOVE or
 // autonomous error recovery. The ServoTask owns all UART1 operations.
 bool MotorInterface::RequestCurrentHoldTest()
@@ -685,6 +712,8 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             ChangeCommState(MotorCommState::IDLE);
             break;
         case MotorInterfaceState::HOMING:
+            home_scope_active_ = home_scope_requested_.load();
+            home_abort_hold_pending_ = false;
             home_phase_ = HomePhase::PREPARE;
             home_progress_snapshot_.store(1u); // PREPARE, stage 0
             home_command_ = {};
@@ -692,7 +721,9 @@ void MotorInterface::EnterState(MotorInterfaceState state)
             home_busy_ = false;
             park_busy_ = false; // PollParkShoulder transaction helper
             home_stop_pending_ = false;
-            home_id13_verified_.store(HomeId13Verified::UNKNOWN);
+            // ARMING has verified torque ON for all 7 before entering ARMED.
+            // Historical command confirmation, NOT a live torque sensor.
+            home_id13_verified_.store(HomeId13Verified::ON);
             home_stage_ = 0;
             home_stable_count_ = 0;
             home_shoulder_goal_ = 0;
@@ -1159,7 +1190,11 @@ void MotorInterface::StateArmed()
         if (request == ServoRequest::HOME)
         {
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_HOME_EXECUTION_ENABLE && MOTOR_TORQUE_WRITE_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE
-            ChangeState(MotorInterfaceState::HOMING);
+            if (home_scope_requested_.load() == HomeScope::BASE_ONLY ||
+                MOTOR_HOME_ALLOW_FULL_EXECUTION)
+                ChangeState(MotorInterfaceState::HOMING);
+            else
+                ESP_LOGE(TAG, "Full Home blocked: shoulder-release gate disabled");
 #else
             ESP_LOGW(TAG, "Home execution is disabled at build time");
 #endif
@@ -1397,14 +1432,94 @@ bool MotorInterface::IsHomeStageServo(size_t index) const
     return false;
 }
 
+bool MotorInterface::TryEnterHomeFaultHold(const MotorFeedbackFrame& feedback)
+{
+#if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && MOTOR_HOME_SAFE_FAULT_HOLD_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE
+    // No write while parameter FSM or a servo communication cycle owns UART1.
+    // ID13 must have historical confirmation of torque ON; never attempt
+    // auto-release or auto-enable during an uncertain shoulder phase.
+    if (state_ != MotorInterfaceState::HOMING ||
+        comm_state_ != MotorCommState::IDLE || home_busy_ || park_busy_ ||
+        home_id13_verified_.load() != HomeId13Verified::ON)
+        return false;
+    const int64_t now_us = esp_timer_get_time();
+    if (!ValidateFeedback(feedback, now_us))
+        return false;
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        if (feedback.motors[i].position < 0 ||
+            feedback.motors[i].position > 4095)
+            return false;
+    }
+    if (std::abs(static_cast<int32_t>(feedback.motors[1].position) +
+                 static_cast<int32_t>(feedback.motors[2].position) - 4094)
+        > PARK_SHOULDER_COUPLING_TOLERANCE)
+        return false;
+
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+        hold_command_.motors[i].target_position = feedback.motors[i].position;
+        hold_command_.motors[i].target_velocity = 0;
+        hold_command_.motors[i].output = 0;
+    }
+    fault_hold_target_snapshot_.Write(hold_command_);
+    fault_hold_status_.store(FaultHoldStatus::REQUESTED);
+    fault_hold_bench_test_ = false; // No T226 resume after real HOME abort/fault.
+    // Explicitly retain HOME operation outcome before changing states.
+    SetOperationSnapshot(MotorOperation::HOME, MotorOperationStatus::INTERRUPTED);
+    ChangeState(MotorInterfaceState::FAULT_HOLD);
+    ESP_LOGW(TAG, "HOME transitioned to latched FAULT_HOLD; ID13 verified ON");
+    return true;
+#else
+    (void)feedback;
+    return false;
+#endif
+}
+
+bool MotorInterface::TryEnterHomeFaultHoldFromSnapshot()
+{
+    SharedSnapshotFrame<MotorFeedbackFrame> snapshot{};
+    return GetFeedbackFrame(snapshot) &&
+        TryEnterHomeFaultHold(snapshot.data);
+}
+
 void MotorInterface::StateHoming()
 {
 #if MOTOR_CONTROL_MODE == MOTOR_CONTROL_POSITION && (MOTOR_HOME_EXECUTION_ENABLE || MOTOR_HOME_COMPILE_CHECK) && MOTOR_TORQUE_WRITE_ENABLE && MOTOR_POSITION_OUTPUT_ENABLE
     // A single ServoTask owns HomePhase and home_stage_. Publish a packed
     // consistent read-only diagnostic snapshot before working this iteration.
     PublishHomeProgress();
-    if (servo_request_.exchange(ServoRequest::NONE) == ServoRequest::OFF)
+    const ServoRequest home_request = servo_request_.exchange(ServoRequest::NONE);
+    if (home_request == ServoRequest::OFF)
         home_stop_pending_ = true;
+    if (home_request == ServoRequest::HOME_HOLD_ABORT)
+        home_abort_hold_pending_ = true;
+
+    if (home_abort_hold_pending_)
+    {
+        // Never interrupt UART parameter transactions. If ID13 is OFF or
+        // status/feedback is uncertain, fail closed without asserting hold.
+        if (TryEnterHomeFaultHoldFromSnapshot())
+            return;
+        if (home_busy_ || park_busy_ ||
+            home_id13_verified_.load() != HomeId13Verified::ON)
+        {
+            ESP_LOGE(TAG, "HOME hold abort unavailable: ID13 or UART transaction uncertain");
+            EnterError();
+            return;
+        }
+        // Communication cycle in progress: wait for it to finish normally.
+        // Do not generate a competing UART request.
+        if (comm_state_ != MotorCommState::IDLE)
+        {
+            UpdateCommunicationError();
+            ProcessCommunicationFSM();
+            return;
+        }
+        ESP_LOGE(TAG, "HOME hold abort failed: fresh paired feedback unavailable");
+        EnterError();
+        return;
+    }
 
     if (home_stop_pending_)
     {
@@ -1457,7 +1572,11 @@ void MotorInterface::StateHoming()
             static_cast<unsigned>(home_phase_),
             static_cast<unsigned>(home_stage_),
             static_cast<unsigned>(home_id13_verified_.load()));
-        EnterError();
+        // Timeout can be a mechanical stall even if UART is healthy.
+        // Try the verified torque-ON Current Position Hold only when UART
+        // is idle and feedback is fresh; otherwise preserve ERROR semantics.
+        if (!TryEnterHomeFaultHoldFromSnapshot())
+            EnterError();
         return;
     }
 
@@ -1482,6 +1601,7 @@ void MotorInterface::StateHoming()
         if (std::abs(shoulder_sum - 4094) > PARK_SHOULDER_COUPLING_TOLERANCE)
         { EnterError(); return; }
         home_command_initialized_ = true;
+        home_target_snapshot_.Write(home_command_);
         home_phase_ = HomePhase::MOVE_BASE;
         return;
     }
@@ -1494,7 +1614,23 @@ void MotorInterface::StateHoming()
         {
             home_stable_count_ = 0;
             if (home_phase_ == HomePhase::MOVE_BASE)
+            {
+                if (home_scope_active_ == HomeScope::BASE_ONLY)
+                {
+                    SharedSnapshotFrame<MotorFeedbackFrame> snapshot{};
+                    if (!GetFeedbackFrame(snapshot) ||
+                        !ValidateFeedback(snapshot.data, esp_timer_get_time()))
+                    { EnterError(); return; }
+                    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+                        hold_command_.motors[i].target_position =
+                            snapshot.data.motors[i].position;
+                    home_progress_snapshot_.store(11u);
+                    ESP_LOGI(TAG, "BASE_ONLY HOME completed without ID13 torque release");
+                    ChangeState(MotorInterfaceState::ARMED);
+                    return;
+                }
                 home_phase_ = HomePhase::RELEASE_SHOULDER;
+            }
             else if (home_phase_ == HomePhase::MOVE_SHOULDER)
             {
                 home_phase_ = HomePhase::SETTLE_SHOULDER;
@@ -1977,6 +2113,7 @@ void MotorInterface::CommProcess()
                 }
             }
             cycle_command_ = home_command_;
+            home_target_snapshot_.Write(home_command_);
             command_valid_ = true;
             ChangeControlValidity(true);
             output_inhibit_ = false;
